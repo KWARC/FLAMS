@@ -68,6 +68,11 @@
                 min(100vw, calc(var(--rustex-page-width) * 1px))
         )
     );
+    --rustex-curr-width: calc(
+        (var(--rustex-text-width) / var(--rustex-page-width)) *
+            min(100vw, calc(var(--rustex-page-width) * 1px))
+    );
+    --rustex-this-width: var(--rustex-curr-width);
     background-color: #f9fafb;
     color: #000000;
     display: flex;

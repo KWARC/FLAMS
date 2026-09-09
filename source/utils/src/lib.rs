@@ -439,7 +439,7 @@ fn css_things() {
         stylesheet::{MinifyOptions, ParserOptions, StyleSheet},
     };
     tracing_subscriber::fmt().init();
-    let css = include_str!("../../../resources/assets/rustex.css");
+    let css = include_str!("../../../resources/assets/rustex-v0-1-16.css");
     let rules = StyleSheet::parse(css, ParserOptions::default()).unwrap();
     let roundtrip = rules.to_css(PrinterOptions::default()).unwrap();
     tracing::info!("{}", roundtrip.code);

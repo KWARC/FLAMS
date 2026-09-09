@@ -136,8 +136,8 @@ pub fn build_ftml(
     uri: DocumentUri,
 ) -> Result<FtmlResult, String> {
     static CSS_SUBSTS: [(&str, &str); 1] = [(
-        "https://raw.githack.com/FlexiFormal/RusTeX/main/rustex/src/resources/rustex.css",
-        "srv:/rustex.css",
+        "https://raw.githack.com/FlexiFormal/RusTeX/main/rustex/src/resources/rustex-v0-1-16.css",
+        "srv:/rustex-v0-1-16.css",
     )];
     let path = uri.path().cloned();
     let archive = uri.archive_uri().clone();

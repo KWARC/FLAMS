@@ -29,7 +29,7 @@ pub fn flodown_editor() -> AnyView {
     #[cfg(feature = "hydrate")]
     math::TeXClient::provide();
 
-    Css::Link("/rustex.css".to_string().into_boxed_str()).inject();
+    Css::Link("/rustex2.css".to_string().into_boxed_str()).inject();
     Css::Link(
         "https://fonts.googleapis.com/css2?family=STIX+Two+Text"
             .to_string()

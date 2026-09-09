@@ -171,10 +171,12 @@ ftml-component-utils = { git = "https://github.com/FlexiFormal/FTML" }
 
 #flodown = { path="../FloDown/flodown" }
 
-rustex_lib = { version = "0.1", features = ["multithreaded"] }
-tex_engine = { version = "0.1", features = ["multithreaded"] }
+#rustex_lib = { version = "0.1", features = ["multithreaded"] }
+#tex_engine = { version = "0.1", features = ["multithreaded"] }
 #rustex_lib = { path = "../RusTeX/rustex", features = ["multithreaded"] }
 #tex_engine = { path = "../RusTeX/tex_engine", features = ["multithreaded"] }
+rustex_lib = { git = "https://github.com/FlexiFormal/RusTeX", branch="css", features = ["multithreaded"] }
+tex_engine = { git = "https://github.com/FlexiFormal/RusTeX", branch="css", features = ["multithreaded"] }
 
 dateparser = "0.3.1"#{git = "https://github.com/Jazzpirate/dateparser"}
 
