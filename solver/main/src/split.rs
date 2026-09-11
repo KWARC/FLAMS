@@ -151,7 +151,7 @@ pub trait SplitStrategy:
         //let mut rules = rules.peekable();
         if rules.is_empty() {
             return Err(if msg {
-                smallvec::smallvec![traceref!(FAIL "No rule applicable")]
+                smallvec::smallvec![traceref!(FAIL "No rule applicable (4)")]
             } else {
                 smallvec::SmallVec::default()
             });
@@ -248,7 +248,7 @@ pub trait SplitStrategy:
         match rules.len() {
             0 => {
                 return Err(if msg {
-                    smallvec::smallvec![traceref!(FAIL "No rule applicable")]
+                    smallvec::smallvec![traceref!(FAIL "No rule applicable (5)")]
                 } else {
                     smallvec::SmallVec::default()
                 });

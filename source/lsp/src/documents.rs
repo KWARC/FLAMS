@@ -7,6 +7,9 @@ use flams_math_archives::{
     utils::path_ext::PathExt,
 };
 use flams_stex::quickparse::stex::{STeXParseData, STeXParseDataI};
+use flams_utils::sourcerefs::{
+    ByteOffset, LSPLineCol, PositionConverter, StringPosition, StringRange,
+};
 use ftml_uris::{ArchiveUri, DocumentUri};
 
 use crate::{
@@ -24,10 +27,12 @@ struct DocumentData {
 
 #[derive(Clone, Debug)]
 pub struct LSPDocument {
-    up_to_date: triomphe::Arc<AtomicBool>,
+    pub(crate) up_to_date: triomphe::Arc<AtomicBool>,
     text: triomphe::Arc<parking_lot::Mutex<LSPText>>,
+    //pub(crate) ignore_verbalizations:triomphe::Arc<parking_lot::Mutex<Vec<(String, Option<StringRange<LSPLineCol>>)>>>,
     pub annotations: STeXParseData,
     data: triomphe::Arc<DocumentData>,
+    pub(crate) force_snify: triomphe::Arc<AtomicBool>,
 }
 impl PartialEq for LSPDocument {
     #[inline]
@@ -88,7 +93,9 @@ impl LSPDocument {
             up_to_date: triomphe::Arc::new(AtomicBool::new(false)),
             text: triomphe::Arc::new(parking_lot::Mutex::new(r)),
             data: triomphe::Arc::new(data),
+            //ignore_verbalizations: triomphe::Arc::new(parking_lot::Mutex::new(Vec::new())),
             annotations: STeXParseData::default(),
+            force_snify: triomphe::Arc::new(AtomicBool::new(false)),
         }
     }
 
@@ -148,11 +155,11 @@ impl LSPDocument {
             .store(false, std::sync::atomic::Ordering::SeqCst);
         self.text.lock().delta(text, range);
     }
-    #[inline]
-    #[must_use]
+
+    /*#[inline]#[must_use]
     pub fn get_range(&self, range: Range) -> (usize, usize) {
         self.text.lock().get_range(range)
-    }
+    }*/
     #[inline]
     #[must_use]
     pub fn get_position(&self, pos: Position) -> usize {
@@ -166,31 +173,56 @@ impl LSPDocument {
     }
 
     #[allow(clippy::significant_drop_tightening)]
-    fn load_annotations_and<R>(
+    pub(crate) fn load_annotations_and<R>(
         &self,
         state: LSPState,
+        snify: bool,
         f: impl FnOnce(&STeXParseDataI) -> R,
     ) -> Option<R> {
-        let lock = self.text.lock();
+        let text_lock = self.text.lock();
         let uri = self.data.doc_uri.as_ref()?;
         let path = self.data.path.as_ref()?;
 
         let mut docs = state.documents.write();
-        let mut store = LSPStore::<true>::new(&mut *docs);
-        let data =
-    //let (data,t) = measure(||
-      flams_stex::quickparse::stex::quickparse(
-      uri,&lock.text, path,
-      &AnyBackend::Global,
-      &mut store);
-        //);
+        let mut vlock = state.verbalizations.lock();
+        //let ignores = self.ignore_verbalizations.lock();
+        let ignores = if snify {
+            let mut ret = Vec::new();
+            for line in text_lock.text.lines().rev() {
+                let trimmed = line.trim();
+                if !trimmed.is_empty() && !trimmed.starts_with('%') {
+                    break;
+                }
+                let Some(line) = trimmed.strip_prefix("% srskip ") else {
+                    continue;
+                };
+                for v in line.split(',') {
+                    let trimmed = v.trim();
+                    if let Some(name) = trimmed.strip_prefix("l:") {
+                        ret.push(name);
+                    }
+                }
+            }
+            ret
+        } else {
+            Vec::new()
+        };
+        let mut store = LSPStore::<true>::new(&mut docs, Some(&mut vlock), &ignores, snify);
+        let data = flams_stex::quickparse::stex::quickparse(
+            uri,
+            &text_lock.text,
+            path,
+            &AnyBackend::Global,
+            &mut store,
+        );
         data.replace(&self.annotations);
         self.up_to_date
             .store(true, std::sync::atomic::Ordering::SeqCst);
         drop(store);
+        drop(vlock);
         drop(docs);
         //tracing::info!("quickparse took {t}");
-        drop(lock);
+        drop(text_lock);
         /*let path = path.clone();
         let _ = tokio::task::spawn_blocking(move || {
           state.relint_dependents(path);
@@ -209,6 +241,7 @@ impl LSPDocument {
     pub async fn with_annots<R: Send + 'static>(
         self,
         state: LSPState,
+        snify: bool,
         f: impl FnOnce(&STeXParseDataI) -> R + Send + 'static,
     ) -> Option<R> {
         if !self.has_annots() {
@@ -221,7 +254,12 @@ impl LSPDocument {
             }
             return Some(f(&lock));
         }
-        match tokio::task::spawn_blocking(move || self.load_annotations_and(state, f)).await {
+        let forced = self
+            .force_snify
+            .swap(false, std::sync::atomic::Ordering::AcqRel);
+        let snify = snify || forced;
+        match tokio::task::spawn_blocking(move || self.load_annotations_and(state, snify, f)).await
+        {
             Ok(r) => r,
             Err(e) => {
                 tracing::error!("Error computing annots: {}", e);
@@ -235,6 +273,7 @@ impl LSPDocument {
     pub async fn with_annots_block<R: Send + 'static>(
         self,
         state: LSPState,
+        snify: bool,
         f: impl FnOnce(&STeXParseDataI) -> R + Send + 'static,
     ) -> Option<R> {
         if !self.has_annots() {
@@ -253,7 +292,8 @@ impl LSPDocument {
                 }
             };
         }
-        match tokio::task::spawn_blocking(move || self.load_annotations_and(state, f)).await {
+        match tokio::task::spawn_blocking(move || self.load_annotations_and(state, snify, f)).await
+        {
             Ok(r) => r,
             Err(e) => {
                 tracing::error!("Error computing annots: {}", e);
@@ -263,8 +303,8 @@ impl LSPDocument {
     }
 
     #[inline]
-    pub fn compute_annots(&self, state: LSPState) {
-        self.load_annotations_and(state, |_| ());
+    pub fn compute_annots(&self, state: LSPState, snify: bool) {
+        self.load_annotations_and(state, snify, |_| ());
     }
 }
 
@@ -310,73 +350,14 @@ impl LSPText {
     }
 
     fn get_range(&self, range: Range) -> (usize, usize) {
-        let Range {
-            start:
-                Position {
-                    line: mut start_line,
-                    character: startc,
-                },
-            end:
-                Position {
-                    line: mut end_line,
-                    character: mut endc,
-                },
-        } = range;
-        if start_line == end_line {
-            endc -= startc;
-        }
-        end_line -= start_line;
-
-        let mut start = 0;
-        let mut rest = self.text.as_str();
-        while start_line > 0 {
-            if let Some(i) = rest.find(['\n', '\r']) {
-                start += i + 1;
-                if rest.as_bytes()[i] == b'\r' && rest.as_bytes().get(i + 1) == Some(&b'\n') {
-                    start += 1;
-                    rest = &rest[i + 2..];
-                } else {
-                    rest = &rest[i + 1..];
-                }
-                start_line -= 1;
-            } else {
-                start = self.text.len();
-                rest = "";
-                end_line = 0;
-                break;
-            }
-        }
-        let next = rest
-            .chars()
-            .take(startc as usize)
-            .map(char::len_utf8)
-            .sum::<usize>();
-        start += next;
-        rest = &rest[next..];
-
-        let mut end = start;
-        while end_line > 0 {
-            if let Some(i) = rest.find(['\n', '\r']) {
-                end += i + 1;
-                if rest.as_bytes()[i] == b'\r' && rest.as_bytes().get(i + 1) == Some(&b'\n') {
-                    end += 1;
-                    rest = &rest[i + 2..];
-                } else {
-                    rest = &rest[i + 1..];
-                }
-                end_line -= 1;
-            } else {
-                end = self.text.len();
-                rest = "";
-                break;
-            }
-        }
-        end += rest
-            .chars()
-            .take(endc as usize)
-            .map(char::len_utf8)
-            .sum::<usize>();
-        (start, end)
+        let Range { start, end } = range;
+        let off = PositionConverter::<LSPLineCol, ByteOffset>::new(self.text.as_str()).next_range(
+            StringRange {
+                start: LSPLineCol::new(start.line, start.character),
+                end: LSPLineCol::new(end.line, end.character),
+            },
+        );
+        (off.start.0, off.end.0)
     }
 
     #[allow(clippy::cast_possible_truncation)]

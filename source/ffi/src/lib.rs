@@ -60,7 +60,7 @@ pub extern "C" fn initialize() {
         .expect("Failed to initialize Tokio runtime")
         .block_on(async {
             flams_system::settings::Settings::initialize(spec);
-            GlobalBackend::initialize::<flams_system::TokioEngine>();
+            GlobalBackend::initialize::<flams_system::TokioEngine>(false);
         });
 }
 
@@ -102,7 +102,9 @@ pub extern "C" fn load_all_files() {
     state.clear();
     // let mut lspstore = LSPStore::<true>::new(&mut state);
     for (p, uri) in files {
-        if let Some(ret) = LSPStore::<true>::new(&mut state).load(p.as_ref(), &uri) {
+        if let Some(ret) =
+            LSPStore::<true>::new(&mut state, None, &[], false).load(p.as_ref(), &uri)
+        {
             state.insert(File(p.clone()), Data(ret, true));
         }
     }
@@ -163,7 +165,7 @@ pub unsafe extern "C" fn load_file(path: *const libc::c_char) {
     let lspdoc = LSPDocument::new("".to_string(), File(Path::new(path_str).into()));
     let p = Path::new(path_str);
     let uri: &DocumentUri = lspdoc.document_uri().unwrap();
-    if let Some(ret) = LSPStore::<true>::new(&mut state).load(p.as_ref(), &uri) {
+    if let Some(ret) = LSPStore::<true>::new(&mut state, None, &[], false).load(p.as_ref(), &uri) {
         state.insert(File(p.into()), Data(ret, true));
     }
 }
@@ -181,9 +183,9 @@ pub extern "C" fn reset_global_backend() {
         .build()
         .expect("Failed to initialize Tokio runtime")
         .block_on(async {
-            GlobalBackend.reset::<flams_system::TokioEngine>();
+            GlobalBackend.reset::<flams_system::TokioEngine>(false);
             let _ = tokio::task::spawn_blocking(|| {
-                for e in flams_system::iter::<flams_system::FlamsExtension>() {
+                for e in flams_system::iter::<flams_math_archives::FlamsExtension>() {
                     (e.on_reload)();
                 }
             });

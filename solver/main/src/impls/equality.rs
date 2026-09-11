@@ -5,8 +5,7 @@ use crate::{
     split::SplitStrategy, trace::CheckingTask,
 };
 use ftml_ontology::terms::{
-    ApplicationTerm, Argument, BindingTerm, BoundArgument, ComponentVar, MaybeSequence, Term,
-    Variable, eq::Alpha,
+    ApplicationTerm, Argument, BindingTerm, BoundArgument, MaybeSequence, Term, eq::Alpha,
 };
 use ftml_solver_trace::traceref;
 
@@ -14,7 +13,21 @@ fn same_shape(lhs: &Term, rhs: &Term) -> bool {
     if lhs.is_solvable().is_some() || rhs.is_solvable().is_some() {
         return true;
     }
-    matches!(
+    match (lhs, rhs) {
+        (Term::Symbol { uri: a, .. }, Term::Symbol { uri: b, .. }) if *a == *b => true,
+        (Term::Var { .. }, Term::Var { .. })
+        | (Term::Label { .. }, Term::Label { .. })
+        | (Term::Number(_), Term::Number(_))
+        | (Term::Field(_), Term::Field(_)) => true,
+        (Term::Application(a), Term::Application(b)) if a.arguments.len() == b.arguments.len() => {
+            same_shape(&a.head, &b.head)
+        }
+        (Term::Bound(a), Term::Bound(b)) if a.arguments.len() == b.arguments.len() => {
+            same_shape(&a.head, &b.head)
+        }
+        _ => false,
+    }
+    /*matches!(
         (lhs, rhs),
         (Term::Symbol { .. }, Term::Symbol { .. })
             | (Term::Var { .. }, Term::Var { .. })
@@ -23,7 +36,7 @@ fn same_shape(lhs: &Term, rhs: &Term) -> bool {
             | (Term::Number(_), Term::Number(_))
             | (Term::Application(_), Term::Application(_))
             | (Term::Bound(_), Term::Bound(_))
-    )
+    )*/
     /*
     if r {
         tracing::warn!(
@@ -71,7 +84,7 @@ impl<'t, Split: SplitStrategy> CheckRef<'t, '_, Split> {
                 slf.top.rules.equality(),
                 &lhs,
                 &rhs,
-                |slf, rl, lhs, rhs| rl.applicable(lhs, rhs),
+                |_, rl, lhs, rhs| rl.applicable(lhs, rhs),
                 |slf, rl, lhs, rhs| rl.apply(slf, lhs, rhs),
                 |lhs, rhs| {
                     lhs.alpha_equal(rhs)
@@ -79,13 +92,11 @@ impl<'t, Split: SplitStrategy> CheckRef<'t, '_, Split> {
                         || rhs.is_solvable().is_some()
                 },
             ) {
-                either::Left(opt) => {
-                    if opt.is_some() {
-                        if opt == Some(false) {
-                            slf.failure("Disproven");
-                        }
-                        return opt;
+                either::Left(Some(opt)) => {
+                    if !opt {
+                        slf.failure("Disproven");
                     }
+                    return Some(opt);
                 }
                 either::Right((lhs, rhs)) => {
                     if lhs.alpha_equal(&rhs) {
@@ -98,10 +109,13 @@ impl<'t, Split: SplitStrategy> CheckRef<'t, '_, Split> {
                     if let Some(unk) = rhs.is_solvable() {
                         return slf.solve_equality(unk, &lhs);
                     }
+                    slf.comment("Trying congruence");
                     return slf.scoped(|slf| slf.congruence(&lhs, &rhs));
                 }
+                either::Left(None) => (),
             }
 
+            slf.comment("Trying congruence");
             slf.congruence(&lhs, &rhs)
         })
     }
@@ -109,8 +123,8 @@ impl<'t, Split: SplitStrategy> CheckRef<'t, '_, Split> {
     fn congruence(&mut self, lhs: &'t Term, rhs: &'t Term) -> Option<bool> {
         tracing::debug!("Trying congruence");
         let Some((lhs, rhs)) = self.simplify_until_two(lhs, rhs, |_, lhs, rhs| {
-            lhs.unapply_implicits().is_some()
-                || rhs.unapply_implicits().is_some()
+            lhs.unapply_implicits(false).is_some()
+                || rhs.unapply_implicits(false).is_some()
                 || same_shape(lhs, rhs)
         }) else {
             return self.congruence_cont(lhs, rhs);
@@ -122,18 +136,22 @@ impl<'t, Split: SplitStrategy> CheckRef<'t, '_, Split> {
     }
 
     fn congruence_i(&mut self, lhs: &'t Term, rhs: &'t Term) -> Option<bool> {
-        if lhs.unapply_implicits().is_some() || rhs.unapply_implicits().is_some() {
+        if lhs.unapply_implicits(false).is_some() || rhs.unapply_implicits(false).is_some() {
             let nlhs = self
                 .simplify_implicit(lhs)
+                .ok()
+                .flatten()
                 .map_or(Cow::Borrowed(lhs), Cow::Owned);
             let nrhs = self
                 .simplify_implicit(rhs)
+                .ok()
+                .flatten()
                 .map_or(Cow::Borrowed(rhs), Cow::Owned);
             if !lhs.alpha_equal(&nlhs) || !rhs.alpha_equal(&nrhs) {
                 return self.scoped(|slf| slf.congruence(&nlhs, &nrhs));
             }
         }
-        match (lhs, rhs) {
+        let r = match (lhs, rhs) {
             (Term::Application(l), Term::Application(r))
                 if l.arguments.len() == r.arguments.len() =>
             {
@@ -161,26 +179,39 @@ impl<'t, Split: SplitStrategy> CheckRef<'t, '_, Split> {
             (Term::Field(a), Term::Field(b)) if a.key == b.key => {
                 self.congruence_cont(&a.record, &b.record)
             }
-            (Term::Field(a), Term::Field(b)) => Some(false),
+            (Term::Field(_), Term::Field(_)) => Some(false),
             (Term::Number(a), Term::Number(b)) => Some(a == b),
             _ => self.congruence_cont(lhs, rhs),
+        };
+        if r.is_some() {
+            return r;
         }
+        if let Some(nlhs) = self.simplify_one(super::simplify::Expansion::Full, lhs) {
+            return self.scoped(|slf| slf.congruence(rhs, &nlhs));
+        }
+        if let Some(nrhs) = self.simplify_one(super::simplify::Expansion::Full, rhs) {
+            return self.scoped(|slf| slf.congruence(&nrhs, lhs));
+        }
+        None
     }
 
     fn congruence_cont(&mut self, lhs: &'t Term, rhs: &'t Term) -> Option<bool> {
         self.add_msg(traceref!("shapes don't match: ", lhs, " and ", rhs).into());
+        /*
         // LAST RESORT
         let nlhs = self
-            .simplify_full(true, lhs)
+            .simplify_full(super::simplify::Expansion::Full, lhs)
             .map_or(Cow::Borrowed(lhs), Cow::Owned);
         let nrhs = self
-            .simplify_full(true, rhs)
+            .simplify_full(super::simplify::Expansion::Full, rhs)
             .map_or(Cow::Borrowed(rhs), Cow::Owned);
         if *lhs != *nlhs || *rhs != *nrhs {
             self.scoped(|slf| slf.check_equality_i(&nlhs, &nrhs))
         } else {
             None
         }
+         */
+        None
         /*
         // todo: preserve logs on recursive fail
         if let Some(lhs) = self.simplify_one(true, lhs) {
@@ -316,33 +347,33 @@ impl<'t, Split: SplitStrategy> CheckRef<'t, '_, Split> {
                         substs.push((a.var.name(), &b.var));
                     }
                 }
-                /*
-                (BoundArgument::BoundSeq(MaybeSequence::One(a)), BoundArgument::Bound(b))
-                | (BoundArgument::Bound(a), BoundArgument::BoundSeq(MaybeSequence::One(b)))
-                    if a.var.is_solvable().is_some() || b.var.is_solvable().is_some() =>
-                {
-                    match (a.tp.as_ref(), b.tp.as_ref()) {
-                        (Some(a), Some(b)) => {
-                            maybe_subst!(a, b);
+                (
+                    BoundArgument::BoundSeq(MaybeSequence::Seq(sa)),
+                    BoundArgument::BoundSeq(MaybeSequence::Seq(sb)),
+                ) if sa.len() == sb.len() => {
+                    for (a, b) in sa.iter().zip(sb.iter()) {
+                        match (a.tp.as_ref(), b.tp.as_ref()) {
+                            (Some(a), Some(b)) => {
+                                maybe_subst!(a, b);
+                            }
+                            (None, None) => (),
+                            _ => return None,
                         }
-                        (None, None) => (),
-                        _ => return None,
-                    }
-                    match (a.df.as_ref(), b.df.as_ref()) {
-                        (Some(a), Some(b)) => {
-                            maybe_subst!(a, b);
+                        match (a.df.as_ref(), b.df.as_ref()) {
+                            (Some(a), Some(b)) => {
+                                maybe_subst!(a, b);
+                            }
+                            (None, None) => (),
+                            _ => return None,
                         }
-                        (None, None) => (),
-                        _ => return None,
-                    }
-                    self.extend_context(b);
-                    if a.var.name() != b.var.name() {
-                        substs.push((a.var.name(), &b.var));
+                        self.extend_context(b);
+                        if a.var.name() != b.var.name() {
+                            substs.push((a.var.name(), &b.var));
+                        }
                     }
                 }
-                 */
                 _ => {
-                    self.failure(format!("Argument not simple: {a:?}  <-->  {b:?}"));
+                    self.failure(format!("Arguments do not match: {a:?}  <-->  {b:?}"));
                     return None;
                 }
             }

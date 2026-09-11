@@ -42,8 +42,8 @@ impl axum::response::IntoResponse for Img {
     }
 }
 
-#[axum::debug_handler]
-pub(crate) async fn img_handler(
+//#[axum::debug_handler]
+pub async fn img_handler(
     uri: http::Uri,
     // axum::extract::State(ServerState { images, .. }): axum::extract::State<ServerState>,
     //request: http::Request<axum::body::Body>,
@@ -85,7 +85,7 @@ pub(crate) async fn aux_handler(uri: http::Uri) -> impl axum::response::IntoResp
     else {
         return deflt();
     };
-    let mime = mime_guess::from_ext(p).first_or_octet_stream();
+    let mime = mime_guess::from_path(&path).first_or_octet_stream();
 
     let req = Request::builder()
         .uri(uri)

@@ -5,6 +5,7 @@ pub mod equality;
 mod inference;
 pub mod preparation;
 pub mod proving;
+pub mod records;
 pub mod simplify;
 pub mod solving;
 mod typing;
@@ -13,9 +14,10 @@ use crate::{
     CheckRef, Checker,
     context::{ContextBase, CowLike},
     impls::solving::Solutions,
+    judgment_cache::{JudgmentCache, JudgmentCacheBase, Judgments},
     split::{CancelToken, SplitStrategy},
     trace::{CheckLogCow, CheckingTask, PreCheckLog, RefCheckLog},
-    utils::MutableRefList,
+    utils::{Merge, MutableRefList},
 };
 use ftml_ontology::terms::ComponentVar;
 use ftml_solver_trace::traceref;
@@ -24,6 +26,72 @@ use smallvec::SmallVec;
 use std::borrow::Cow;
 
 const DEPTH_LIMIT: usize = 64;
+
+impl<Split: SplitStrategy> Checker<Split> {
+    pub(crate) fn wrap_task<'t, R: std::fmt::Debug + Clone + 'static, F>(
+        &'t self,
+        task: CheckingTask<'t>,
+        unknowns: Option<Solutions>,
+        then: F,
+    ) -> (Option<R>, Solutions, PreCheckLog)
+    where
+        F: FnOnce(CheckRef<'t, '_, Split>) -> Option<R>,
+    {
+        let mut context = ContextBase::new();
+        let mut solutions = unknowns.unwrap_or_default();
+        let mut messages = SmallVec::new();
+        let cancel = CancelToken::default();
+        let proof_state = ProverState::default();
+        let mut judgment_cache = JudgmentCacheBase::default();
+        let rf = CheckRef {
+            top: self,
+            messages: &mut messages,
+            cancel: &cancel,
+            context: context.get_ref(),
+            judgment_cache: judgment_cache.make_ref(),
+            proof_state: &proof_state,
+            added: 0,
+            solutions: MutableRefList::new(&mut solutions),
+            traced: true,
+        };
+        let r = then(rf);
+        let rl = MutableRefList::new(&mut solutions);
+        let line = task
+            .close(r.as_ref(), messages.into_boxed_slice(), context.as_ref())
+            .into_owned(&|t| rl.subst(t));
+        tracing::trace!("Solutions:{solutions:#?}");
+        (r, solutions, line)
+    }
+
+    pub(crate) fn wrap_none<'t, R: std::fmt::Debug + Clone + 'static, F>(
+        &'t self,
+        unknowns: Option<Solutions>,
+        then: F,
+    ) -> (Solutions, R)
+    where
+        F: FnOnce(CheckRef<'t, '_, Split>) -> R,
+    {
+        let mut context = ContextBase::new();
+        let mut solutions = unknowns.unwrap_or_default();
+        let mut messages = SmallVec::new();
+        let cancel = CancelToken::default();
+        let proof_state = ProverState::default();
+        let mut judgment_cache = JudgmentCacheBase::default();
+        let rf = CheckRef {
+            top: self,
+            messages: &mut messages,
+            cancel: &cancel,
+            judgment_cache: judgment_cache.make_ref(),
+            context: context.get_ref(),
+            proof_state: &proof_state,
+            added: 0,
+            solutions: MutableRefList::new(&mut solutions),
+            traced: true,
+        };
+        let r = then(rf);
+        (solutions, r)
+    }
+}
 
 impl<'c, 'i, Split: SplitStrategy> CheckRef<'c, 'i, Split> {
     pub fn extend_context<C: CowLike<'c>>(&mut self, var: C) {
@@ -107,12 +175,38 @@ impl<'c, 'i, Split: SplitStrategy> CheckRef<'c, 'i, Split> {
             //self.failure("Depth Limit Reached!");
             return (None, traceref!(FAIL "Depth Limit Reached!"));
         }
+
+        if self.judgment_cache.running(&task) {
+            return (None, traceref!(FAIL "Recursion in Task check"));
+        }
+        if let Some(r) = self.judgment_cache.has::<R>(&task, &self.context) {
+            let l = task.close(
+                r.as_ref(),
+                Box::new([if r.is_some() {
+                    traceref!("previously proven")
+                } else {
+                    traceref!(FAIL "previously failed already")
+                }
+                .into()]),
+                &[],
+            );
+            return (r, l);
+        }
+        self.judgment_cache.push(task);
         let old_msg = std::mem::replace(self.messages, SmallVec::new());
         let ret = f(self);
         let msgs = std::mem::replace(self.messages, old_msg);
         let ctx = self.context.as_ref();
         let ctx = &ctx[ctx.len() - self.added as usize..ctx.len()];
-        let line = task.close(ret.as_ref(), msgs.into_boxed_slice(), ctx);
+        let task = self
+            .judgment_cache
+            .pop(&ret, self.context.as_ref(), &self.solutions)
+            .expect("wut");
+        let line = if crate::TRUNCATE_PROOFS && ret.is_some() {
+            task.close(ret.as_ref(), Box::new([]), ctx)
+        } else {
+            task.close(ret.as_ref(), msgs.into_boxed_slice(), ctx)
+        };
         (ret, line)
     }
 
@@ -130,12 +224,35 @@ impl<'c, 'i, Split: SplitStrategy> CheckRef<'c, 'i, Split> {
             //self.failure("Depth Limit Reached!");
             return Err(traceref!(FAIL "Depth Limit Reached!"));
         }
+        if self.judgment_cache.running(&task) {
+            return Err(traceref!(FAIL "Recursion in Task check"));
+        }
+        if let Some(r) = self.judgment_cache.has::<R>(&task, &self.context) {
+            return match r {
+                Some(r) => {
+                    self.messages.push(
+                        task.close(
+                            Some(&r),
+                            Box::new([traceref!("previously proven").into()]),
+                            &[],
+                        )
+                        .into(),
+                    );
+                    Ok(r)
+                }
+                None => Err(traceref!(FAIL "previously failed already")),
+            };
+        }
+
+        self.judgment_cache.push(task);
+
         let mut messages = SmallVec::<CheckLogCow<'c>, _>::new();
         let mut solutions = Solutions::default();
         let inner = CheckRef {
             messages: &mut messages,
             context: self.context.duplicate(),
             proof_state: self.proof_state,
+            judgment_cache: self.judgment_cache.copied(),
             solutions: MutableRefList::new_with_parent(&mut solutions, &self.solutions),
             top: self.top,
             cancel: self.cancel,
@@ -145,7 +262,17 @@ impl<'c, 'i, Split: SplitStrategy> CheckRef<'c, 'i, Split> {
         let ret = f(inner);
         let ctx = self.context.as_ref();
         let ctx = &ctx[ctx.len() - self.added as usize..ctx.len()];
-        let line = task.close(ret.as_ref(), messages.into_boxed_slice(), ctx);
+
+        let task = self
+            .judgment_cache
+            .pop(&ret, self.context.as_ref(), &solutions)
+            .expect("wut");
+
+        let line = if crate::TRUNCATE_PROOFS && ret.is_some() {
+            task.close(ret.as_ref(), Box::new([]), ctx)
+        } else {
+            task.close(ret.as_ref(), messages.into_boxed_slice(), ctx)
+        };
         if let Some(r) = ret {
             self.merge_solutions(solutions);
             self.messages.push(line.into());
@@ -176,22 +303,6 @@ impl<'c, 'i, Split: SplitStrategy> CheckRef<'c, 'i, Split> {
             self.messages.push(m.into_owned(&|t| self.subst(t)).into());
         }
         r
-    }
-
-    pub(crate) fn copied(&self) -> CheckRefBranch<'c, 'i, Split> {
-        CheckRefBranch {
-            context: self.context.clone_base(),
-            proof_state: self.proof_state,
-            messages: SmallVec::new(),
-            // --------------
-            top: self.top,
-            solutions: Solutions::default(),
-            // SAFETY: will not live longer than 'i; only immutable borrows, 'i is only stack reference
-            // to parent
-            parent_solutions: unsafe { std::mem::transmute(&self.solutions) },
-            cancel: self.cancel,
-            traced: self.traced,
-        }
     }
 
     pub(crate) fn cancellable<R: Send>(&mut self, f: impl FnOnce(&mut Self) -> R) -> R {
@@ -227,67 +338,22 @@ impl<'c, 'i, Split: SplitStrategy> CheckRef<'c, 'i, Split> {
             }
         }
     }
-}
 
-impl<Split: SplitStrategy> Checker<Split> {
-    pub(crate) fn wrap_task<'t, R: std::fmt::Debug + Clone + 'static, F>(
-        &'t self,
-        task: CheckingTask<'t>,
-        unknowns: Option<Solutions>,
-        then: F,
-    ) -> (Option<R>, Solutions, PreCheckLog)
-    where
-        F: FnOnce(CheckRef<'t, '_, Split>) -> Option<R>,
-    {
-        let mut context = ContextBase::new();
-        let mut solutions = unknowns.unwrap_or_default();
-        let mut messages = SmallVec::new();
-        let cancel = CancelToken::default();
-        let proof_state = ProverState::default();
-        let rf = CheckRef {
-            top: self,
-            messages: &mut messages,
-            cancel: &cancel,
-            context: context.get_ref(),
-            proof_state: &proof_state,
-            added: 0,
-            solutions: MutableRefList::new(&mut solutions),
-            traced: true,
-        };
-        let r = then(rf);
-        let rl = MutableRefList::new(&mut solutions);
-        let line = task
-            .close(r.as_ref(), messages.into_boxed_slice(), context.as_ref())
-            .into_owned(&|t| rl.subst(t));
-        tracing::trace!("Solutions:{solutions:#?}");
-        (r, solutions, line)
-    }
-
-    pub(crate) fn wrap_none<'t, R: std::fmt::Debug + Clone + 'static, F>(
-        &'t self,
-        unknowns: Option<Solutions>,
-        then: F,
-    ) -> (Solutions, R)
-    where
-        F: FnOnce(CheckRef<'t, '_, Split>) -> R,
-    {
-        let mut context = ContextBase::new();
-        let mut solutions = unknowns.unwrap_or_default();
-        let mut messages = SmallVec::new();
-        let cancel = CancelToken::default();
-        let proof_state = ProverState::default();
-        let rf = CheckRef {
-            top: self,
-            messages: &mut messages,
-            cancel: &cancel,
-            context: context.get_ref(),
-            proof_state: &proof_state,
-            added: 0,
-            solutions: MutableRefList::new(&mut solutions),
-            traced: true,
-        };
-        let r = then(rf);
-        (solutions, r)
+    pub(crate) fn copied(&self) -> CheckRefBranch<'c, 'i, Split> {
+        CheckRefBranch {
+            context: self.context.clone_base(),
+            proof_state: self.proof_state,
+            messages: SmallVec::new(),
+            // --------------
+            top: self.top,
+            cache_base: self.judgment_cache.new_base(),
+            solutions: Solutions::default(),
+            // SAFETY: will not live longer than 'i; only immutable borrows, 'i is only stack reference
+            // to parent
+            parent_solutions: unsafe { std::mem::transmute(&self.solutions) },
+            cancel: self.cancel,
+            traced: self.traced,
+        }
     }
 }
 
@@ -295,6 +361,7 @@ pub struct CheckRefBranch<'c, 'i, Split: SplitStrategy> {
     top: &'c Checker<Split>,
     context: ContextBase<'c>,
     proof_state: &'i ProverState,
+    cache_base: JudgmentCacheBase<'c>,
     solutions: Solutions,
     parent_solutions: &'i MutableRefList<'i, Solutions>,
     cancel: &'i CancelToken<'i, Split::CancelToken>,
@@ -302,12 +369,13 @@ pub struct CheckRefBranch<'c, 'i, Split: SplitStrategy> {
     traced: bool,
 }
 impl<'c, Split: SplitStrategy> CheckRefBranch<'c, '_, Split> {
-    pub const fn get_ref(&mut self) -> CheckRef<'c, '_, Split> {
+    pub fn get_ref(&mut self) -> CheckRef<'c, '_, Split> {
         CheckRef {
             top: self.top,
             cancel: self.cancel,
             messages: &mut self.messages,
             proof_state: self.proof_state,
+            judgment_cache: self.cache_base.make_ref(),
             context: self.context.get_ref(),
             added: 0,
             solutions: MutableRefList::new_with_parent(&mut self.solutions, self.parent_solutions),

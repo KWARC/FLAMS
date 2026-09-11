@@ -1,5 +1,7 @@
 use std::path::Path;
 
+#[cfg(feature = "rdf")]
+use ftml_uris::FtmlUri;
 use ftml_uris::{ArchiveId, DocumentUri, ModuleUri, UriPath};
 
 use crate::{
@@ -240,3 +242,64 @@ impl<'de> ::serde::Deserialize<'de> for BuildTargetId {
         )
     }
 }
+
+#[cfg(feature = "rdf")]
+source_format! { RDF {
+    name:"rdf",
+    description:"Import .ttl-RDF-files into the triple store",
+    targets:&[RDF_IMPORT.id()],
+    file_extensions: &["ttl"],
+    dependencies: |_| Vec::new()
+}}
+
+#[cfg(feature = "rdf")]
+build_target! { RDF_IMPORT {
+    name:"import-rdf",
+    description:"imports existent .ttl file",
+    run: |s| {
+        let v = match s.source {
+            either::Left(path) => {
+                let file = match std::fs::File::open(path) {
+                    Err(e) => return BuildResult {
+                            log: FileOrString::Str(format!("Error reading {}: {e}",path.display()).into_boxed_str()),
+                            result: Err(Vec::new())
+                        },
+                    Ok(f) => f
+                };
+                let buf = std::io::BufReader::new(file);
+                let reader = oxigraph::io::RdfParser::from_format(oxigraph::io::RdfFormat::Turtle)
+                    .for_reader(buf);
+                match reader.map(|q| q.map(|q| ulo::rdf_types::Triple {
+                    subject:q.subject,
+                    predicate:q.predicate,
+                    object:q.object
+                })).collect::<Result<Vec<_>,_>>() {
+                    Ok(v) => v,
+                    Err(e) => return BuildResult {
+                            log: FileOrString::Str(format!("Error reading {}: {e}",path.display()).into_boxed_str()),
+                            result: Err(Vec::new())
+                        }
+                }
+            }
+            either::Right(txt) => {
+                let reader = oxigraph::io::RdfParser::from_format(oxigraph::io::RdfFormat::Turtle)
+                    .for_reader(txt.as_bytes());
+                match reader.map(|q| q.map(|q| ulo::rdf_types::Triple {
+                    subject:q.subject,
+                    predicate:q.predicate,
+                    object:q.object
+                })).collect::<Result<Vec<_>,_>>() {
+                    Ok(v) => v,
+                    Err(e) => return BuildResult {
+                            log: FileOrString::Str(format!("Error reading ttl: {e}").into_boxed_str()),
+                            result: Err(Vec::new())
+                        }
+                }
+            }
+        };
+        BuildResult {
+            log: FileOrString::Str(String::new().into_boxed_str()),
+            result: Ok(Some(Box::new(v)))
+        }
+    }
+}}

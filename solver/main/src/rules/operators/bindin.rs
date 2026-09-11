@@ -325,7 +325,7 @@ impl BindInApplyRule {
         tp: Term,
     ) -> Option<(BindingTerm, bool)> {
         let Some(nret) = checker.scoped(|checker| {
-            match checker.simplify_until(&tp, |_, t| matches!(t, Term::Bound(_)))? {
+            match checker.simplify_until(&tp, |_, t| matches!(t, Term::Bound(b) if b.arguments.len() == 2 && (b.head.is(&self.bind) || b.head.is(&self.bindin))))? {
                 Cow::Borrowed(_) => Some(None),
                 Cow::Owned(tp) => Some(Some(tp)),
             }

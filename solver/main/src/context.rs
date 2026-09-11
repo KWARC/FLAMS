@@ -31,7 +31,7 @@ impl<'a> CowLike<'a> for &'a ComponentVar {
 #[derive(Clone)]
 pub(crate) struct ContextBase<'c> {
     //hoas: Option<HOASSymbols>,
-    ctx: SmallVec<Cow<'c, ComponentVar>, { super::context::CONTEXT_LEN }>,
+    ctx: SmallVec<Cow<'c, ComponentVar>, { CONTEXT_LEN }>,
     blocked: Vec<GlobalOrLocal>,
     facts: LocalFacts,
     goal_counter: std::sync::Arc<std::sync::atomic::AtomicUsize>,

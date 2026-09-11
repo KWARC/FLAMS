@@ -414,18 +414,28 @@ impl PreCheckLog {
 }
 
 impl CheckLog {
-    pub fn filter_failures(&mut self) {
+    pub fn filter_failures(&mut self, preserve_siblings: bool) {
         let Some(steps) = self.steps_mut() else {
             return;
         };
-        *steps = std::mem::take(steps)
-            .into_iter()
-            .filter(|s| !s.success())
-            .map(|mut s| {
-                s.filter_failures();
-                s
-            })
-            .collect();
+        if preserve_siblings {
+            for s in steps {
+                if s.success() {
+                    s.filter_failures(false);
+                } else {
+                    s.filter_failures(true);
+                }
+            }
+        } else {
+            *steps = std::mem::take(steps)
+                .into_iter()
+                .filter(|s| !s.success())
+                .map(|mut s| {
+                    s.filter_failures(preserve_siblings);
+                    s
+                })
+                .collect();
+        }
     }
     pub const fn steps_mut(&mut self) -> Option<&mut Vec<Self>> {
         match self {
@@ -528,6 +538,26 @@ tasks! {
     Subtype(sub:Term,sup:Term) => bool,
     HasType(tm:Term,tp:Term) => bool,
     Equality(lhs:Term,rhs:Term) => bool,
+}
+
+#[cfg(feature = "full")]
+impl<'b> PartialEq<CheckingTask<'b>> for CheckingTask<'_> {
+    fn eq(&self, other: &CheckingTask<'b>) -> bool {
+        match (self, other) {
+            (Self::Simplify(t), CheckingTask::Simplify(t2))
+            | (Self::Proving(t), CheckingTask::Proving(t2))
+            | (Self::Inference(t), CheckingTask::Inference(t2))
+            | (Self::Inhabitable(t), CheckingTask::Inhabitable(t2))
+            | (Self::Universe(t), CheckingTask::Universe(t2)) => t.alpha_equal(t2),
+            (Self::VariableInference(v), CheckingTask::VariableInference(v2)) => v == v2,
+            (Self::Subtype(a, b), CheckingTask::Subtype(a2, b2))
+            | (Self::HasType(a, b), CheckingTask::HasType(a2, b2))
+            | (Self::Equality(a, b), CheckingTask::Equality(a2, b2)) => {
+                a.alpha_equal(a2) && b.alpha_equal(b2)
+            }
+            _ => false,
+        }
+    }
 }
 
 #[cfg(feature = "full")]
@@ -775,7 +805,10 @@ impl TraceDisplay for &mut std::fmt::Formatter<'_> {
     fn term(&mut self, term: &Term, _: Option<MessageLevel>) -> std::fmt::Result {
         <_ as std::fmt::Debug>::fmt(&term.debug_short(), self)
     }
-    fn string(&mut self, s: &str, _: Option<MessageLevel>) -> std::fmt::Result {
+    fn string(&mut self, s: &str, lvl: Option<MessageLevel>) -> std::fmt::Result {
+        if lvl == Some(MessageLevel::Failure) {
+            self.write_str("[FAILED] ")?;
+        }
         self.write_str(s)
     }
     fn variable(&mut self, var: &Variable, _: Option<MessageLevel>) -> std::fmt::Result {
@@ -946,8 +979,13 @@ impl TraceDisplay for ColorDisplay<'_, '_> {
     fn term(&mut self, term: &Term, _: Option<MessageLevel>) -> std::fmt::Result {
         write!(self.0, "{:?}", term.debug_short().yellow())
     }
-    fn string(&mut self, s: &str, _: Option<MessageLevel>) -> std::fmt::Result {
-        write!(self.0, "{}", s.bright_black())
+    fn string(&mut self, s: &str, lvl: Option<MessageLevel>) -> std::fmt::Result {
+        if lvl == Some(MessageLevel::Failure) {
+            write!(self.0, "{} ", "[FAILED]".red())?;
+            write!(self.0, "{}", s.red())
+        } else {
+            write!(self.0, "{}", s.bright_black())
+        }
     }
     fn variable(&mut self, var: &Variable, _: Option<MessageLevel>) -> std::fmt::Result {
         self.0.write_str(var.name())

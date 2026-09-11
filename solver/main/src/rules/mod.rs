@@ -9,7 +9,13 @@ pub use ftml_solver_trace::{CheckerRule, SizedSolverRule};
 use ftml_uris::SymbolUri;
 
 use crate::{CheckRef, rules::operators::typing, split::SplitStrategy};
-use ftml_ontology::terms::{Argument, Term, termpaths::TermPath};
+use ftml_ontology::{
+    domain::{
+        SharedDeclaration,
+        declarations::{SharedSymbolLike, morphisms::Morphism},
+    },
+    terms::{Argument, Term, helpers::IntoTerm, termpaths::TermPath},
+};
 use std::{fmt::Debug, ops::ControlFlow};
 
 macro_rules! rules{
@@ -86,14 +92,26 @@ rules! {
         operators::numbers::NumberTypes,
         implicits::ImplicitRule,
         unknowns::UnknownsRule,
+        CommentRule,
+        MorphismRule,
+        super::impls::records::FieldRule,
+        ProofBarrier
+    ),
+    subtyping = SubtypeRule(
+        operators::numbers::NumberTypes,
+        super::impls::records::RecordRule,
         CommentRule
     ),
-    subtyping = SubtypeRule(operators::numbers::NumberTypes,CommentRule),
     checking = CheckingRule(operators::numbers::NumberTypes),
-    inhabitable = InhabitableRule(sequences::SeqUniverseRule,CommentRule),
+    inhabitable = InhabitableRule(
+        sequences::SeqUniverseRule,
+        super::impls::records::RecordRule,
+        CommentRule,
+    ),
     equality = EqualityRule(
         operators::numbers::NumberTypes,
-        CommentRule
+        CommentRule,
+        ProofBarrier
         //sequences::SeqTypeEqRule
     ),
     universe = UniverseRule(sequences::SeqUniverseRule,CommentRule),
@@ -101,7 +119,9 @@ rules! {
     simplification = SimplificationRule(
         unknowns::UnknownsRule,
         typing::InferredTypeSimplificationRule,
-        CommentRule
+        CommentRule,
+        MorphismRule,
+        super::impls::records::FieldRule
     ),
     marker = MarkerRule,
     proof = ProofRule
@@ -293,5 +313,137 @@ impl<Split: SplitStrategy> EqualityRule<Split> for CommentRule {
         let lhs = as_comment(lhs).unwrap_or(lhs);
         let rhs = as_comment(rhs).unwrap_or(rhs);
         checker.check_subtype(lhs, rhs)
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct MorphismRule;
+impl SizedSolverRule for MorphismRule {
+    fn priority(&self) -> isize {
+        100_000
+    }
+    fn display(&self) -> Vec<crate::trace::Displayable> {
+        ftml_solver_trace::trace!("morphism rule")
+    }
+}
+impl MorphismRule {
+    pub fn is_morphism_appl<'t, Split: SplitStrategy>(
+        t: &'t Term,
+        checker: &mut CheckRef<'_, '_, Split>,
+    ) -> Option<(SharedDeclaration<Morphism>, &'t Term)> {
+        Morphism::unapply(t, &mut |head| {
+            checker
+                .top
+                .get_symbol_like(head, |t| checker.prepare(t, None).1)
+                .ok()
+        })
+    }
+}
+impl<Split: SplitStrategy> InferenceRule<Split> for MorphismRule {
+    fn applicable(&self, term: &Term) -> bool {
+        match term {
+            Term::Application(app) if app.arguments.len() == 1 => {
+                matches!(&app.head, Term::Symbol { .. })
+                    && matches!(app.arguments.first(), Some(Argument::Simple(_)))
+            }
+            _ => false,
+        }
+    }
+    fn infer<'t>(&self, mut checker: CheckRef<'t, '_, Split>, term: &'t Term) -> Option<Term> {
+        let (m, arg) = Self::is_morphism_appl(term, &mut checker)?;
+        let arg_tp = checker.infer_type(arg)?;
+        m.apply(&arg_tp, &mut |s| {
+            checker
+                .top
+                .get_symbol_like(s, |t| checker.prepare(t, None).1)
+                .ok()
+        })
+        .ok()
+        .map(std::borrow::Cow::into_owned)
+    }
+}
+impl<Split: SplitStrategy> SimplificationRule<Split> for MorphismRule {
+    fn applicable(&self, t: &Term) -> bool {
+        match t {
+            Term::Application(app) if app.arguments.len() == 1 => {
+                matches!(&app.head, Term::Symbol { .. })
+                    && matches!(app.arguments.first(), Some(Argument::Simple(_)))
+            }
+            _ => false,
+        }
+    }
+    fn apply(
+        &self,
+        mut checker: CheckRef<'_, '_, Split>,
+        t: &Term,
+    ) -> Result<Term, Option<TermPath>> {
+        tracing::debug!("Morphism? {:?}", t.debug_short());
+        let (m, arg) = Self::is_morphism_appl(t, &mut checker).ok_or(None)?;
+        tracing::debug!("Applying morphism to {:?}", arg.debug_short());
+        m.apply(arg, &mut |s| {
+            checker
+                .top
+                .get_symbol_like(s, |t| checker.prepare(t, None).1)
+                .ok()
+        })
+        .map_or(Err(None), |a| {
+            if *a == *t {
+                //println!("Not applicable: {} to {:?}", m.uri, arg.debug_short());
+                Err(None)
+            } else {
+                tracing::debug!("Result: {:?}", a.debug_short());
+                Ok(a.into_owned())
+            }
+        })
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct ProofBarrier;
+impl SizedSolverRule for ProofBarrier {
+    fn priority(&self) -> isize {
+        100_000
+    }
+    fn display(&self) -> Vec<crate::trace::Displayable> {
+        ftml_solver_trace::trace!("proof barrier")
+    }
+}
+impl ProofBarrier {
+    pub fn proof_for(t: &Term) -> Option<&Term> {
+        if let Term::Application(t) = t
+            && let Term::Symbol { uri, .. } = &t.head
+            && *uri == *symbols::PROOF_BARRIER
+            && let [Argument::Simple(_), Argument::Simple(prop)] = &*t.arguments
+        {
+            return Some(prop);
+        }
+        None
+    }
+    pub fn apply(df: Term, tp: Term) -> Term {
+        symbols::PROOF_BARRIER.clone().apply_tms([df, tp])
+    }
+}
+impl<Split: SplitStrategy> InferenceRule<Split> for ProofBarrier {
+    fn applicable(&self, term: &Term) -> bool {
+        Self::proof_for(term).is_some()
+    }
+    fn infer<'t>(&self, _: CheckRef<'t, '_, Split>, term: &'t Term) -> Option<Term> {
+        Self::proof_for(term).cloned()
+    }
+}
+impl<Split: SplitStrategy> EqualityRule<Split> for ProofBarrier {
+    // Proof Irrelevance
+    fn applicable(&self, lhs: &Term, rhs: &Term) -> bool {
+        Self::proof_for(lhs).is_some() && Self::proof_for(rhs).is_some()
+    }
+    fn apply<'t>(
+        &self,
+        mut checker: CheckRef<'t, '_, Split>,
+        lhs: &'t Term,
+        rhs: &'t Term,
+    ) -> Option<bool> {
+        let lhs = Self::proof_for(lhs)?;
+        let rhs = Self::proof_for(rhs)?;
+        Some(checker.check_equality(lhs, rhs) == Some(true))
     }
 }

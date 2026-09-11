@@ -1,9 +1,8 @@
 use crate::quickparse::tokens::TeXToken;
 use flams_utils::{
-    parsing::{ParseSource, StringOrStr},
-    sourcerefs::SourceRange,
+    parsing::{SourceParser, StrParser},
+    sourcerefs::{StringPosition, StringRange},
 };
-use std::marker::PhantomData;
 
 use super::stex::DiagnosticLevel;
 
@@ -13,22 +12,15 @@ pub enum Mode {
     Math { display: bool },
 }
 
-pub struct TeXTokenizer<
-    'a,
-    Pa: ParseSource<'a>,
-    Err: FnMut(String, SourceRange<Pa::Pos>, DiagnosticLevel),
-> {
-    pub reader: Pa,
+pub struct TeXTokenizer<'a, Pos: StringPosition> {
+    pub reader: StrParser<'a, Pos>,
     pub letters: String,
     pub mode: Mode,
-    err: Err,
-    phantom: PhantomData<&'a ()>,
+    pub(crate) err: &'a mut dyn FnMut(String, StringRange<Pos>, DiagnosticLevel),
 }
 
-impl<'a, Pa: ParseSource<'a>, Err: FnMut(String, SourceRange<Pa::Pos>, DiagnosticLevel)> Iterator
-    for TeXTokenizer<'a, Pa, Err>
-{
-    type Item = TeXToken<Pa::Pos, Pa::Str>;
+impl<'a, Pos: StringPosition> Iterator for TeXTokenizer<'a, Pos> {
+    type Item = TeXToken<Pos, &'a str>;
 
     #[inline]
     fn next(&mut self) -> Option<Self::Item> {
@@ -36,41 +28,41 @@ impl<'a, Pa: ParseSource<'a>, Err: FnMut(String, SourceRange<Pa::Pos>, Diagnosti
     }
 }
 
-impl<'a, Pa: ParseSource<'a>, Err: FnMut(String, SourceRange<Pa::Pos>, DiagnosticLevel)>
-    TeXTokenizer<'a, Pa, Err>
-{
-    pub(crate) fn new(reader: Pa, err: Err) -> Self {
+impl<'a, Pos: StringPosition> TeXTokenizer<'a, Pos> {
+    pub(crate) fn new(
+        input: &'a str,
+        err: &'a mut dyn FnMut(String, StringRange<Pos>, DiagnosticLevel),
+    ) -> Self {
         TeXTokenizer {
-            reader,
+            reader: StrParser::new(input),
             mode: Mode::Text,
-            phantom: PhantomData,
             err,
             letters: "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ".to_string(),
         }
     }
-    fn read_next(&mut self) -> Option<TeXToken<Pa::Pos, Pa::Str>> {
+    fn read_next(&mut self) -> Option<TeXToken<Pos, &'a str>> {
         self.reader.trim_start();
         let start = self.reader.curr_pos();
         match self.reader.peek_head() {
             None => None,
             Some('%') => {
-                self.reader.pop_head();
+                self.reader.next_char();
                 Some(self.read_comment(start))
             }
             Some('{') => {
-                self.reader.pop_head();
+                self.reader.next_char();
                 Some(TeXToken::BeginGroupChar(start))
             }
             Some('}') => {
-                self.reader.pop_head();
+                self.reader.next_char();
                 Some(TeXToken::EndGroupChar(start))
             }
             Some('$') => {
-                self.reader.pop_head();
+                self.reader.next_char();
                 match self.mode {
                     Mode::Math { display: true } => {
                         if self.reader.starts_with('$') {
-                            self.reader.pop_head();
+                            self.reader.next_char();
                         } else {
                             self.problem(
                                 start,
@@ -87,7 +79,7 @@ impl<'a, Pa: ParseSource<'a>, Err: FnMut(String, SourceRange<Pa::Pos>, Diagnosti
                     }
                     Mode::Text => {
                         if self.reader.starts_with('$') {
-                            self.reader.pop_head();
+                            self.reader.next_char();
                             self.open_math(true);
                             Some(TeXToken::BeginMath {
                                 display: true,
@@ -104,7 +96,7 @@ impl<'a, Pa: ParseSource<'a>, Err: FnMut(String, SourceRange<Pa::Pos>, Diagnosti
                 }
             }
             Some('\\') => {
-                self.reader.pop_head();
+                self.reader.next_char();
                 let name = match self.reader.peek_head() {
                     Some(c) if self.letters.contains(c) => {
                         self.reader.read_while(|c| self.letters.contains(c))
@@ -117,7 +109,7 @@ impl<'a, Pa: ParseSource<'a>, Err: FnMut(String, SourceRange<Pa::Pos>, Diagnosti
             _ => {
                 let text = self.reader.read_while(|c| !"%{}$\\".contains(c));
                 Some(TeXToken::Text {
-                    range: SourceRange {
+                    range: StringRange {
                         start,
                         end: self.reader.curr_pos(),
                     },
@@ -137,10 +129,10 @@ impl<'a, Pa: ParseSource<'a>, Err: FnMut(String, SourceRange<Pa::Pos>, Diagnosti
     }
 
     #[inline]
-    pub fn problem(&mut self, start: Pa::Pos, msg: impl std::fmt::Display, level: DiagnosticLevel) {
+    pub fn problem(&mut self, start: Pos, msg: impl std::fmt::Display, level: DiagnosticLevel) {
         (self.err)(
             msg.to_string(),
-            SourceRange {
+            StringRange {
                 start,
                 end: self.reader.curr_pos(),
             },
@@ -148,10 +140,10 @@ impl<'a, Pa: ParseSource<'a>, Err: FnMut(String, SourceRange<Pa::Pos>, Diagnosti
         );
     }
 
-    fn read_comment(&mut self, start: Pa::Pos) -> TeXToken<Pa::Pos, Pa::Str> {
+    fn read_comment(&mut self, start: Pos) -> TeXToken<Pos, &'a str> {
         let (c, end) = self.reader.read_until_line_end();
-        c.strip_prefix("%STEXIDE").ok().map_or_else(
-            || TeXToken::Comment(SourceRange { start, end }),
+        c.strip_prefix("%STEXIDE").map_or_else(
+            || TeXToken::Comment(StringRange { start, end }),
             TeXToken::Directive,
         )
     }

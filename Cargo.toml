@@ -3,7 +3,9 @@ members = [
     "math-archives",
     "backend-types",
     "search",
-    "source/main",
+    "source/main/shared",
+    "source/main/flams",
+    "source/main/wasm",
     "source/utils",
     "source/database",
     "source/system",
@@ -29,9 +31,15 @@ members = [
     "source/ffi", "solver/main","solver/trace"#,"solver/new"
     #"maintest"
 , "source/buildsystem"]
+    #"source/router/flodown",
+    # "experiments",
+    # "solver/new",
+    #"maintest",
+]
 resolver = "2"
 exclude = [
     "experiments",
+    "target/rscript"
     #"web/graphs","test-plugin","tests","thaw",
     #"api", "controller", "core", "main", "ftml", "stex", "web/main", "web/orm"
 ]
@@ -49,14 +57,14 @@ panic = 'abort'
 opt-level = 'z'
 lto = true
 debug=true
-#opt-level = 2
-#split-debuginfo = "off"
 
 [profile.flams-release]
 inherits = "release"
 opt-level = 2
-lto = "fat"
+lto = "fat" # "thin" #
+codegen-units = 1
 panic = "unwind"
+
 
 [profile.flams-dev]
 inherits = "dev"
@@ -110,30 +118,32 @@ too_many_lines = { level = "warn", priority = 1 }
 
 [workspace.dependencies]
 # flams
-flams-ftml = { path = "source/ftml/system", version = "0.0.1" }
-flams-stex = { path = "source/stex", version = "0.0.1" }
-flams-utils = { path = "source/utils", version = "0.0.1" }
-flams-system = { path = "source/system", version = "0.0.1" }
-flams-database = { path = "source/database", version = "0.0.1" }
-flams-lsp = { path = "source/lsp", version = "0.0.1" }
-flams-git = { path = "source/git", version = "0.0.1" }
-flams-web-utils = { path = "source/web-utils", version = "0.0.1" }
-ftml-solver = { path = "solver/main", version= "0.0.1"}
-ftml-solver-trace = { path = "solver/trace", version= "0.0.1"}
+flams-ftml = { path = "source/ftml/system" }
+flams-stex = { path = "source/stex" }
+flams-utils = { path = "source/utils" }
+flams-system = { path = "source/system" }
+flams-database = { path = "source/database" }
+flams-lsp = { path = "source/lsp" }
+flams-git = { path = "source/git" }
+flams-web-utils = { path = "source/web-utils" }
+ftml-solver = { path = "solver/main" }
+ftml-solver-trace = { path = "solver/trace" }
 
-flams-router-base = { path = "source/router/base", version = "0.0.1" }
-flams-router-dashboard = { path = "source/router/dashboard", version = "0.0.1" }
-flams-router-content = { path = "source/router/content", version = "0.0.1" }
-flams-router-backend = { path = "source/router/backend", version = "0.0.1" }
-flams-router-buildqueue-base = { path = "source/router/buildqueue/base", version = "0.0.1" }
-flams-router-buildqueue-components = { path = "source/router/buildqueue/components", version = "0.0.1" }
-flams-router-git-base = { path = "source/router/git/base", version = "0.0.1" }
-flams-router-git-components = { path = "source/router/git/components", version = "0.0.1" }
-flams-router-login = { path = "source/router/login", version = "0.0.1" }
+flams-main = { path = "source/main/shared" }
+
+flams-router-base = { path = "source/router/base" }
+flams-router-dashboard = { path = "source/router/dashboard" }
+flams-router-content = { path = "source/router/content" }
+flams-router-backend = { path = "source/router/backend" }
+flams-router-buildqueue-base = { path = "source/router/buildqueue/base" }
+flams-router-buildqueue-components = { path = "source/router/buildqueue/components" }
+flams-router-git-base = { path = "source/router/git/base" }
+flams-router-git-components = { path = "source/router/git/components" }
+flams-router-login = { path = "source/router/login" }
 flams-router-logging = { path = "source/router/logging" }
 flams-router-search = { path = "source/router/search" }
 flams-router-vscode = { path = "source/router/vscode-bindings" }
-flams-flodown = { path = "source/router/flodown" }
+#flams-flodown = { path = "source/router/flodown" }
 
 # refactor
 flams-math-archives = { path = "math-archives" }
@@ -151,7 +161,7 @@ ulo = { git = "https://github.com/FlexiFormal/FTML" }
 ftml-dom = { git = "https://github.com/FlexiFormal/FTML" }
 ftml-component-utils = { git = "https://github.com/FlexiFormal/FTML" }
 
-flodown = { git = "https://github.com/FlexiFormal/FloDown" }
+#flodown = { git = "https://github.com/FlexiFormal/FloDown" }
 
 #ftml-uris = { path = "../FTML/uris", features = ["interned"] }
 #ftml-ontology = { path = "../FTML/ontology" }
@@ -192,7 +202,7 @@ serde_json = { version = "1", features = ["unbounded_depth"] }
 serde_stacker = "0.1"
 rustc-hash = "2"
 chrono = "0.4"
-oxrdf = "0.2.3"
+oxrdf = "0.3"
 smallvec = { version = "2.0.0-alpha.12" }
 lazy_static = "1.5"
 url = "2"
@@ -208,7 +218,7 @@ spliter = "0.1"
 walkdir = "2.5"
 filetime = "0.2"
 regex = "1.10"
-fancy-regex = "0.18"
+fancy-regex = "0.19"
 async-broadcast = "0.7"
 simple-home-dir = "0.5"
 async-trait = "0.1"
@@ -222,13 +232,13 @@ tokio = { version = "1" }                                                   #, f
 tokio-util = { version = "0.7", features = ["compat"] }
 tokio-stream = { version = "0.1" }
 tempfile = { version = "3" }
-phf = { version = "0.13", default-features = false, features = ["macros"] }
+phf = { version = "0.14", default-features = false, features = ["macros"] }
 crossbeam-channel = { version = "0.5" }
 flate2 = { version = "1.0" }
 tar = { version = "0.4" }
 async-compression = { version = "0.4", features = ["tokio", "gzip"] }
 astral-tokio-tar = "0.5.1"
-strum = { version = "0.27", features = ["derive"] }
+strum = { version = "0.28", features = ["derive"] }
 git-url-parse = { version = "0.4" }
 flume = { version = "0.12", features = ["async"] }
 ordered-float = "5"
@@ -245,7 +255,7 @@ tracing-subscriber = { version = "0.3", features = [
 # tracing-appender = "0.2"
 tracing-error = "0.2"
 
-toml = "0.9"
+toml = "1"
 serde_yml = "0.0.12"
 serde-value = "0.7"
 eyre = "0.6"
@@ -254,14 +264,14 @@ thiserror = "2"
 clap = { version = "4.5", features = ["derive"] }
 
 oxigraph = { version = "0.5", default-features = false, features=["rdf-12"] }
-oxiri = "*"
+oxiri = "0.2" # oxigraph needs this (currently)
 spargebra = "0.4"
 sparesults = {version="0.3",features=["sparql-12"]}
 oxrdfio = { version = "0.2" }                            #, features = ["async-tokio"] }
 
-sqlx = { version = "0.8", features = ["sqlite", "macros", "runtime-tokio"] }
+sqlx = { version = "0.9", features = ["sqlite", "macros", "runtime-tokio"] }
 libsqlite3-sys = { version = "*", features = ["bundled"] }
-html5ever = "0.38"                                                           # TODO update once html2text updates markup5ever dependency
+html5ever = "0.39"                                                           # TODO update once html2text updates markup5ever dependency
 
 async-lsp = { version = "0.2", features = ["tokio", "async-io"] }
 futures = { version = "0.3" }
@@ -293,7 +303,7 @@ icondata_bi = "0"
 axum = { version = "0.8", features = ["ws"] }
 axum-macros = { version = "0.5" }
 tower = { version = "0.5", features = ["util"] }
-tower-http = { version = "0.6", features = ["fs", "trace", "cors"] }
+tower-http = { version = "0.7", features = ["fs", "trace", "cors"] }
 tower-sessions = { version = "0.14" } # version required by axum-login :-/
 axum-login = { version = "0.18" }
 http = { version = "1" }
@@ -307,24 +317,28 @@ tracing-wasm = "0.2"
 wasm-bindgen-futures = "0.4"
 console_error_panic_hook = "0.1.7"
 #reqwasm = "0.5"
-gloo-storage = "0.3"
-gloo-timers = "0.3"
+gloo-storage = "0.4"
+gloo-timers = "0.4"
 web-sys = { version = "0.3" }
 #tsify-next = { version = "0.5", features = ["js"] }
 tsify = { version = "0.5", features = ["js"] }
 js-regexp = "0.2"
-wasm-streams = "0.5"
+wasm-streams = "0.5" #something reqwest requires <0.6
 futures-util = "0.3"
 
 # search
 
 #html2text = "0.15"
-tantivy = "0.25"
+tantivy = "0.26"
 simsimd = "6"
-fastembed = "5.8.1"
+fastembed = "6"
 #ort-candle = "0.2.0+0.9"
 ort = { version="2.0.0-rc.11"}#, default-features = false, features = ["alternative-backend"] }
 
+waken_snowball = "0.1"
+radix_trie = "0.3"
+memchr = "2.7"
+arrayvec = "0.7"
 
 ahash = "0.8"
 getrandom = "0.3" # version required by ahash :-/
@@ -344,9 +358,9 @@ hash-file-name = "hash.txt"
 name = "flams"
 #output-name = "flams"
 bin-package = "flams"
-lib-package = "flams"
-bin-features = ["ssr","tantivy"] #,"vectorsearch"] #
-lib-features = ["hydrate"]
+lib-package = "flams-wasm"
+bin-features = ["tantivy"] #,"vectorsearch"] #
+lib-features = [] #["hydrate"]
 lib-default-features = false
 bin-profile-release = "flams-release"
 bin-profile-dev = "flams-dev"

@@ -1,5 +1,6 @@
-use std::{collections::hash_map::Entry, path::Path};
+use std::{hint::unreachable_unchecked, path::Path};
 
+use crate::Entry;
 use async_lsp::{ClientSocket, LanguageClient, lsp_types as lsp};
 use flams_ftml::FtmlResult;
 use flams_math_archives::{
@@ -13,13 +14,12 @@ use flams_stex::{
 };
 use flams_utils::{
     impossible,
-    prelude::HMap,
-    sourcerefs::{LSPLineCol, SourceRange},
+    //prelude::HMap,
+    sourcerefs::{LSPLineCol, StringRange},
 };
 use ftml_ontology::{
     domain::{declarations::symbols::Symbol, modules::Module},
     narrative::{
-        SharedDocumentElement,
         documents::Document,
         elements::{DocumentTerm, LogicalParagraph, VariableDeclaration},
     },
@@ -27,13 +27,14 @@ use ftml_ontology::{
     utils::RefTree,
 };
 use ftml_solver::results::{
-    CheckResult, ContentCheckResult, DocumentCheckResult, SymbolCheckResult, TypeCheckResult,
+    CheckResult, ContentCheckResult, DocumentCheckResult, SymbolCheckResult,
 };
-use ftml_uris::{DocumentElementUri, DocumentUri};
+use ftml_uris::DocumentUri;
 use smallvec::SmallVec;
 
 use crate::{
-    ClientExt, LSPStore, ProgressCallbackServer, annotations::to_diagnostic, documents::LSPDocument,
+    ClientExt, LSPStore, ProgressCallbackServer, annotations::to_diagnostic,
+    documents::LSPDocument, verbalizations::VerbalizationTrie,
 };
 
 #[derive(Clone)]
@@ -124,9 +125,9 @@ impl std::fmt::Display for UrlOrFile {
 
 #[derive(Default, Clone)]
 pub struct LSPState {
-    pub documents: triomphe::Arc<parking_lot::RwLock<HMap<UrlOrFile, DocData>>>,
+    pub documents: triomphe::Arc<crate::LMap<UrlOrFile, DocData>>, //parking_lot::RwLock<HMap<UrlOrFile, DocData>>>,
     rustex: triomphe::Arc<std::sync::OnceLock<RusTeX>>,
-    //backend: TemporaryBackend,
+    pub(crate) verbalizations: VerbalizationTrie, //backend: TemporaryBackend,
 }
 impl LSPState {
     #[inline]
@@ -182,13 +183,13 @@ impl LSPState {
                             lock.diagnostics.insert(STeXDiagnostic {
                                 level: DiagnosticLevel::Warning,
                                 message: format!("Unknown web font for {fnt}"),
-                                range: SourceRange::default(),
+                                range: StringRange::default(),
                             });
                             for (glyph, char) in &dt.missing.inner {
                                 lock.diagnostics.insert(STeXDiagnostic {
                                     level: DiagnosticLevel::Warning,
                                     message: format!("unknown unicode character for glyph {char} ({glyph}) in font {fnt}"),
-                                    range: SourceRange::default()
+                                    range: StringRange::default()
                                 });
                             }
                         }
@@ -200,15 +201,9 @@ impl LSPState {
                     for ft in std::mem::take(ft) {
                         let url = UrlOrFile::File(ft.file.into());
                         if url == *uri {
-                            done = Some(SourceRange {
-                                start: LSPLineCol {
-                                    line: ft.line,
-                                    col: 0,
-                                },
-                                end: LSPLineCol {
-                                    line: ft.line,
-                                    col: ft.col,
-                                },
+                            done = Some(StringRange {
+                                start: LSPLineCol::new(ft.line, 0),
+                                end: LSPLineCol::new(ft.line, ft.col),
                             });
                         } else if let Some(dc) = self.documents.read().get(&url) {
                             let data = match dc {
@@ -219,15 +214,9 @@ impl LSPState {
                             lock.diagnostics.insert(STeXDiagnostic {
                                 level: DiagnosticLevel::Error,
                                 message: format!("RusTeX Error: {e}"),
-                                range: SourceRange {
-                                    start: LSPLineCol {
-                                        line: ft.line,
-                                        col: 0,
-                                    },
-                                    end: LSPLineCol {
-                                        line: ft.line,
-                                        col: ft.col,
-                                    },
+                                range: StringRange {
+                                    start: LSPLineCol::new(ft.line, 0),
+                                    end: LSPLineCol::new(ft.line, ft.col),
                                 },
                             });
                             let _ = client.publish_diagnostics(lsp::PublishDiagnosticsParams {
@@ -308,7 +297,7 @@ impl LSPState {
                                             diagnostics: vec![to_diagnostic(&STeXDiagnostic {
                                                 level: DiagnosticLevel::Error,
                                                 message: format!("Module {m} not found"),
-                                                range: SourceRange::default(),
+                                                range: StringRange::default(),
                                             })],
                                         });
                                 })
@@ -343,7 +332,7 @@ impl LSPState {
                             lock.diagnostics.insert(STeXDiagnostic {
                                 level: DiagnosticLevel::Error,
                                 message: format!("FTML Error: {e}"),
-                                range: SourceRange::default(),
+                                range: StringRange::default(),
                             });
                             let _ = client.publish_diagnostics(lsp::PublishDiagnosticsParams {
                                 uri: uri.clone().into(),
@@ -478,23 +467,45 @@ impl LSPState {
         iter: I,
         mut and_then: impl FnMut(&std::sync::Arc<Path>, &STeXParseData),
     ) {
-        let mut ndocs = HMap::default();
-        let mut state = LSPStore::<true>::new(&mut ndocs);
+        let mut ndocs = crate::HMap::default();
+        let verbalizations = VerbalizationTrie::default();
+        let mut vlock = verbalizations.lock();
+        let mut state = LSPStore::<true>::new(&mut ndocs, Some(&mut vlock), &[], false);
         for (p, uri) in iter {
-            if let Some(ret) = state.load(p.as_ref(), &uri) {
-                and_then(&p, &ret);
-                let p = UrlOrFile::File(p);
-                match state.map.entry(p) {
-                    Entry::Vacant(e) => {
-                        e.insert(DocData::Data(ret, true));
-                    }
-                    Entry::Occupied(mut e) => {
-                        e.get_mut().merge(DocData::Data(ret, true));
+            let p = UrlOrFile::File(p);
+            if !state.map.contains_key(&p) {
+                let UrlOrFile::File(p) = p else {
+                    // SAFETY: we just constructed it such
+                    unsafe { unreachable_unchecked() }
+                };
+                if let Some(ret) = state.load(p.as_ref(), &uri) {
+                    and_then(&p, &ret);
+                    let p = UrlOrFile::File(p);
+                    match state.map.entry(p) {
+                        Entry::Vacant(e) => {
+                            e.insert(DocData::Data(ret, true));
+                        }
+                        Entry::Occupied(mut e) => {
+                            e.get_mut().merge(DocData::Data(ret, true));
+                        }
                     }
                 }
             }
         }
-        let mut docs = self.documents.write();
+        drop(vlock);
+        self.verbalizations.merge(verbalizations);
+        /*{
+            use radix_trie::TrieCommon;
+            use std::fmt::Write;
+            let lck = self.verbalizations.0.lock();
+            let mut s = String::new();
+            for (k, v) in lck.iter() {
+                writeln!(s, " - {k}: {v:?}");
+            }
+            drop(lck);
+            tracing::warn!("{s}");
+        }*/
+        let docs = &mut self.documents.write();
         for (k, v) in ndocs {
             match docs.entry(k) {
                 Entry::Vacant(e) => {
@@ -507,6 +518,7 @@ impl LSPState {
         }
     }
 
+    /*
     pub fn load<const FULL: bool>(
         &self,
         p: std::sync::Arc<Path>,
@@ -518,14 +530,16 @@ impl LSPState {
         let UrlOrFile::File(path) = &lsp_uri else {
             unreachable!()
         };
-        if self.documents.read().get(&lsp_uri).is_some() {
+        let mut docs = self.documents.write();
+        if docs.get(&lsp_uri).is_some() {
             return;
         }
-        let mut docs = self.documents.write();
-        let mut state = LSPStore::<'_, FULL>::new(&mut *docs);
+        let mut vlock = self.verbalizations.lock();
+        let mut state = LSPStore::<'_, '_, FULL>::new(&mut docs, Some(&mut vlock), true);
         if let Some(ret) = state.load(path, uri) {
-            and_then(&ret);
             drop(state);
+            drop(vlock);
+            and_then(&ret);
             match docs.entry(lsp_uri) {
                 Entry::Vacant(e) => {
                     e.insert(DocData::Data(ret, FULL));
@@ -536,20 +550,21 @@ impl LSPState {
             }
         }
     }
+     */
 
     #[allow(clippy::let_underscore_future)]
     pub fn insert(&self, uri: UrlOrFile, doctext: String) {
-        let doc = self.documents.read().get(&uri).cloned();
+        let doc = self.documents.read().get(&uri).as_deref().cloned();
         match doc {
             Some(DocData::Doc(doc)) => {
                 if doc.set_text(doctext) {
-                    doc.compute_annots(self.clone());
+                    doc.compute_annots(self.clone(), false);
                 }
             }
             _ => {
                 let doc = LSPDocument::new(doctext, uri.clone());
                 if doc.has_annots() {
-                    doc.compute_annots(self.clone());
+                    doc.compute_annots(self.clone(), false);
                 }
                 match self.documents.write().entry(uri) {
                     Entry::Vacant(e) => {
@@ -623,7 +638,7 @@ fn check_diagnostics(
         CheckResult::Missing(u) => E::A(std::iter::once(STeXDiagnostic {
             level: DiagnosticLevel::Error,
             message: format!("Module {u} not found"),
-            range: SourceRange::default(),
+            range: StringRange::default(),
         })),
         CheckResult::Variable(e, r) => {
             let vd = src.0.get_as::<VariableDeclaration>(e.name());
@@ -645,7 +660,7 @@ fn check_diagnostics(
                 range: if let Some(prf) = prf {
                     conv_range(prf.source)
                 } else {
-                    SourceRange::default()
+                    StringRange::default()
                 },
             }))
         }
@@ -772,15 +787,9 @@ fn symbol_check_result(
 
 const fn conv_range(
     ftml_ontology::utils::SourceRange { start, end }: ftml_ontology::utils::SourceRange,
-) -> SourceRange<LSPLineCol> {
-    SourceRange {
-        start: LSPLineCol {
-            line: start.line,
-            col: start.col,
-        },
-        end: LSPLineCol {
-            line: end.line,
-            col: end.col,
-        },
+) -> StringRange<LSPLineCol> {
+    StringRange {
+        start: LSPLineCol::new(start.line, start.col),
+        end: LSPLineCol::new(end.line, end.col),
     }
 }

@@ -162,7 +162,7 @@ pub(crate) fn beta_unknowns_cow(t: &Term) -> Cow<'_, Term> {
                 t.debug_short(),
                 r.debug_short()
             );*/
-            Some(r)
+            Some(std::ops::ControlFlow::Continue(r))
         } else {
             None
         }

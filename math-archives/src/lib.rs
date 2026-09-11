@@ -51,6 +51,15 @@ use std::{
     str::{self, FromStr},
 };
 
+pub struct FlamsExtension {
+    pub name: &'static str,
+    pub on_start: fn(),
+    pub on_build_result: fn(&backend::AnyBackend, &DocumentUri, &UriPath, &dyn Artifact),
+    pub on_reload: fn(),
+}
+
+inventory::collect!(FlamsExtension);
+
 type Result<T> = std::result::Result<T, BackendError>;
 /*
 pub trait DocumentSource: std::fmt::Debug {

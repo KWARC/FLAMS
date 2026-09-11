@@ -1,21 +1,18 @@
 [package]
-name = "flams"
-version = "0.6.0"
+name = "flams-main"
+version = "0.0.6"
 edition = "2024"
 description = "𝖥𝖫∀𝖬∫ - Flexiformal Annotation Management System"
 
 [lib]
-name = "flams"
-crate-type = ["cdylib", "rlib"]
+name = "flams_main"
+crate-type = ["rlib"]
 
 #[package.metadata.wasm-pack.profile.release]
 #wasm-opt = ['-Oz','--enable-bulk-memory','--all-features']
 
 #[package.metadata.wasm-pack.profile.dev]
 #wasm-opt = false
-
-[[bin]]
-name = "flams"
 
 [features]
 docs = []
@@ -27,9 +24,7 @@ ssr = [
     "dep:flams-ftml",
     "dep:flams-math-archives",
     "dep:tokio",
-    "dep:toml",
     "dep:color-eyre",
-    "dep:clap",
     "dep:sqlx",
     "dep:libsqlite3-sys",
     "leptos/ssr",
@@ -148,13 +143,9 @@ tex_engine = { workspace = true, optional = true }
 mime_guess = { workspace = true, optional = true }
 
 tokio = { workspace = true, features = [
-    "full",
-    "rt",
-    "rt-multi-thread",
+    "full","io-uring","parking_lot"
 ], optional = true }
-toml = { workspace = true, optional = true }
 color-eyre = { workspace = true, optional = true }
-clap = { workspace = true, optional = true }
 leptos_axum = { workspace = true, optional = true }
 rayon = { workspace = true, optional = true }
 

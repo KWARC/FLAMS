@@ -199,9 +199,15 @@ impl MapSimplificationRule {
                             Box::new([Argument::Simple(arg)]),
                             None,
                         ));
-                        checker
-                            .scoped(|checker| checker.simplify_full(false, &t))
-                            .unwrap_or(t)
+                        /*checker
+                        .scoped(|checker| {
+                            checker.simplify_full(
+                                crate::impls::simplify::Expansion::NoDefinitionExpansion,
+                                &t,
+                            )
+                        })
+                        .unwrap_or(t)*/
+                        t
                     })
                     .collect())
             }
@@ -213,9 +219,16 @@ impl MapSimplificationRule {
                         Box::new([Argument::Simple(arg.clone())]),
                         None,
                     ));
+                    /*
                     checker
-                        .scoped(|checker| checker.simplify_full(false, &t))
-                        .unwrap_or(t)
+                        .scoped(|checker| {
+                            checker.simplify_full(
+                                crate::impls::simplify::Expansion::NoDefinitionExpansion,
+                                &t,
+                            )
+                        })
+                        .unwrap_or(t) */
+                    t
                 })
                 .collect()),
         }

@@ -45,6 +45,12 @@ mod login {
 
     use flams_router_base::LoginState;
 
+    fn owns(user: &str, queue_name: &str) -> bool {
+        queue_name
+            .strip_prefix(user)
+            .is_some_and(|rest| rest.as_bytes().iter().all(u8::is_ascii_digit))
+    }
+
     pub trait LoginQueue {
         /// #### Errors
         fn with_queue<R>(
@@ -80,7 +86,7 @@ mod login {
                 Self::User { name, .. } => {
                     return qm.with_queue(id.into(), move |q| q.map_or_else(
                         || Err(format!("Queue {id} not found")),
-                        |q| if matches!(q.name(),QueueName::Sandbox{name:qname,..} if &**qname == name)
+                        |q| if matches!(q.name(),QueueName::Sandbox{name:qname,..} if owns(name,&qname))
                         {
                             Ok(f(q))
                         } else {
@@ -110,7 +116,7 @@ mod login {
                 (Self::User { name, .. }, Some(id)) => qm.with_queue(id.into(), move |q|
                    q.map_or_else(
                        || Err(format!("Queue {id} not found")),
-                       |q| if matches!(q.name(),QueueName::Sandbox{name:qname,..} if &**qname == name)
+                       |q| if matches!(q.name(),QueueName::Sandbox{name:qname,..} if owns(name,&qname))
                        {
                            Ok(f(id.into(), q))
                        } else {

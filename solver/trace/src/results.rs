@@ -17,15 +17,25 @@ pub struct DocumentCheckResult {
     pub checks: Box<[CheckResult]>,
 }
 impl DocumentCheckResult {
-    pub fn filter_failures(&mut self) {
-        self.checks = std::mem::take(&mut self.checks)
-            .into_iter()
-            .filter(|c| !c.success())
-            .map(|mut e| {
-                e.filter_failures();
-                e
-            })
-            .collect();
+    pub fn filter_failures(&mut self, preserve_siblings: bool) {
+        if preserve_siblings {
+            for c in &mut self.checks {
+                if c.success() {
+                    c.filter_failures(false);
+                } else {
+                    c.filter_failures(true);
+                }
+            }
+        } else {
+            self.checks = std::mem::take(&mut self.checks)
+                .into_iter()
+                .filter(|c| !c.success())
+                .map(|mut e| {
+                    e.filter_failures(false);
+                    e
+                })
+                .collect();
+        }
     }
     #[must_use]
     pub fn to_json(&self) -> String {
@@ -91,17 +101,17 @@ pub enum SymbolCheckResult {
     },
 }
 impl SymbolCheckResult {
-    pub fn filter_failures(&mut self) {
+    pub fn filter_failures(&mut self, preserve_siblings: bool) {
         match self {
-            Self::TypeOnly { result } => result.filter_failures(),
-            Self::DefiniensOnly { log, .. } => log.filter_failures(),
+            Self::TypeOnly { result } => result.filter_failures(preserve_siblings),
+            Self::DefiniensOnly { log, .. } => log.filter_failures(preserve_siblings),
             Self::Both {
                 inhabitable,
                 matches,
             } => {
-                inhabitable.filter_failures();
+                inhabitable.filter_failures(preserve_siblings);
                 if let Some(m) = matches {
-                    m.filter_failures();
+                    m.filter_failures(preserve_siblings);
                 }
             }
         }
@@ -167,31 +177,51 @@ pub enum CheckResult {
     Missing(ModuleUri),
 }
 impl CheckResult {
-    pub fn filter_failures(&mut self) {
+    pub fn filter_failures(&mut self, preserve_siblings: bool) {
         match self {
             Self::Module { checks, .. } => {
-                *checks = std::mem::take(checks)
-                    .into_iter()
-                    .filter(|c| !c.success())
-                    .map(|mut c| {
-                        c.filter_failures();
-                        c
-                    })
-                    .collect();
+                if preserve_siblings {
+                    for c in checks {
+                        if c.success() {
+                            c.filter_failures(false);
+                        } else {
+                            c.filter_failures(true);
+                        }
+                    }
+                } else {
+                    *checks = std::mem::take(checks)
+                        .into_iter()
+                        .filter(|c| !c.success())
+                        .map(|mut c| {
+                            c.filter_failures(false);
+                            c
+                        })
+                        .collect();
+                }
             }
-            Self::Variable(_, check) => check.filter_failures(),
+            Self::Variable(_, check) => check.filter_failures(preserve_siblings),
             Self::Proof(_, checks) => {
-                *checks = std::mem::take(checks)
-                    .into_iter()
-                    .filter(|c| !c.success())
-                    .map(|mut c| {
-                        c.filter_failures();
-                        c
-                    })
-                    .collect();
+                if preserve_siblings {
+                    for c in checks {
+                        if c.success() {
+                            c.filter_failures(false);
+                        } else {
+                            c.filter_failures(true);
+                        }
+                    }
+                } else {
+                    *checks = std::mem::take(checks)
+                        .into_iter()
+                        .filter(|c| !c.success())
+                        .map(|mut c| {
+                            c.filter_failures(false);
+                            c
+                        })
+                        .collect();
+                }
             }
-            Self::Term { log, .. } => log.filter_failures(),
-            Self::Content(check) => check.filter_failures(),
+            Self::Term { log, .. } => log.filter_failures(preserve_siblings),
+            Self::Content(check) => check.filter_failures(preserve_siblings),
             _ => (),
         }
     }
@@ -293,20 +323,30 @@ pub enum ProofStepResult {
     },
 }
 impl ProofStepResult {
-    pub fn filter_failures(&mut self) {
+    pub fn filter_failures(&mut self, preserve_siblings: bool) {
         match self {
             Self::Assumption { result, .. }
             | Self::Conclusion { result, .. }
-            | Self::Step { result, .. } => result.filter_failures(),
+            | Self::Step { result, .. } => result.filter_failures(preserve_siblings),
             Self::Subproof { results, .. } => {
-                *results = std::mem::take(results)
-                    .into_iter()
-                    .filter(|s| !s.success())
-                    .map(|mut c| {
-                        c.filter_failures();
-                        c
-                    })
-                    .collect();
+                if preserve_siblings {
+                    for c in results {
+                        if c.success() {
+                            c.filter_failures(false);
+                        } else {
+                            c.filter_failures(true);
+                        }
+                    }
+                } else {
+                    *results = std::mem::take(results)
+                        .into_iter()
+                        .filter(|s| !s.success())
+                        .map(|mut c| {
+                            c.filter_failures(false);
+                            c
+                        })
+                        .collect();
+                }
             }
         }
     }
@@ -385,9 +425,9 @@ pub enum ContentCheckResult {
     Symbol(SymbolUri, SymbolCheckResult),
 }
 impl ContentCheckResult {
-    pub fn filter_failures(&mut self) {
+    pub fn filter_failures(&mut self, preserve_siblings: bool) {
         match self {
-            Self::Symbol(_, check) => check.filter_failures(),
+            Self::Symbol(_, check) => check.filter_failures(preserve_siblings),
         }
     }
     #[cfg(feature = "full")]
@@ -430,8 +470,8 @@ pub struct TypeCheckResult {
     pub log: CheckLog,
 }
 impl TypeCheckResult {
-    pub fn filter_failures(&mut self) {
-        self.log.filter_failures();
+    pub fn filter_failures(&mut self, preserve_siblings: bool) {
+        self.log.filter_failures(preserve_siblings);
     }
     #[cfg(feature = "full")]
     #[must_use]
@@ -461,17 +501,17 @@ pub enum ProofStepCheckResult {
     },
 }
 impl ProofStepCheckResult {
-    pub fn filter_failures(&mut self) {
+    pub fn filter_failures(&mut self, preserve_siblings: bool) {
         match self {
-            Self::GoalOnly { result } => result.filter_failures(),
-            Self::ProofOnly { log, .. } => log.filter_failures(),
+            Self::GoalOnly { result } => result.filter_failures(preserve_siblings),
+            Self::ProofOnly { log, .. } => log.filter_failures(preserve_siblings),
             Self::Both {
                 inhabitable,
                 matches,
             } => {
-                inhabitable.filter_failures();
+                inhabitable.filter_failures(preserve_siblings);
                 if let Some(m) = matches {
-                    m.filter_failures();
+                    m.filter_failures(preserve_siblings);
                 }
             }
         }

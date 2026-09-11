@@ -4,8 +4,9 @@ use ftml_ontology::terms::{
     ApplicationTerm, Argument, ArgumentMode, BindingTerm, BoundArgument, ComponentVar,
     MaybeSequence, Term, Variable, eq::Alpha, patterns::Pattern,
 };
-use ftml_solver_trace::SizedSolverRule;
+use ftml_solver_trace::{CheckLogCow, Displayable, RefCheckLog, SizedSolverRule};
 use ftml_uris::{DocumentUri, Id, ModuleUri, SymbolUri};
+use smallvec::SmallVec;
 
 use crate::{
     CheckRef,
@@ -45,8 +46,9 @@ uri! {
     HAS_TYPE = "has type",
     SUBTYPE = "subtype of",
     SIMPLIFY = "simplifies to",
-    EQUAL = "equal",
-    BINDS = "binds"
+    EQUAL = "equal to",
+    BINDS = "binds",
+    PROOF_BARRIER = "proof barrier"
 }
 
 pub trait GenericJudgment: SizedSolverRule {
@@ -60,10 +62,9 @@ pub fn parse<Split: SplitStrategy>(params: &[Term], rules: &mut RuleSet<Split>) 
     /*
     println!("Here!");
     for p in params {
-        println!(" - {:?}",p.debug_short());
+        println!(" - {:?}", p.debug_short());
     }
-     */
-
+    */
     let Some(Term::Application(concl)) = params.last() else {
         return;
     };
@@ -73,6 +74,7 @@ pub fn parse<Split: SplitStrategy>(params: &[Term], rules: &mut RuleSet<Split>) 
         if let Some(p) = Premise::parse(p, &mut vars) {
             premises.push(p);
         } else {
+            tracing::debug!("Invalid premise: {:?}", p.debug_short());
             return;
         }
     }
@@ -80,6 +82,7 @@ pub fn parse<Split: SplitStrategy>(params: &[Term], rules: &mut RuleSet<Split>) 
     if let [Argument::Simple(t)] = &*concl.arguments {
         if concl.head.is(&*INH) {
             Pattern::from_with_vars(t, true, &mut vars);
+            tracing::debug!("New dynamic inhabitability rule: {:?}", t.debug_short());
             rules.push_inhabitable(Box::new(GenericInhabitable {
                 vars: vars.into_boxed_slice(),
                 premises: premises.into_boxed_slice(),
@@ -87,6 +90,7 @@ pub fn parse<Split: SplitStrategy>(params: &[Term], rules: &mut RuleSet<Split>) 
             }));
         } else if concl.head.is(&*UNIV) {
             Pattern::from_with_vars(t, true, &mut vars);
+            tracing::debug!("New dynamic universe rule: {:?}", t.debug_short());
             rules.push_universe(Box::new(GenericUniverse {
                 vars: vars.into_boxed_slice(),
                 premises: premises.into_boxed_slice(),
@@ -94,6 +98,7 @@ pub fn parse<Split: SplitStrategy>(params: &[Term], rules: &mut RuleSet<Split>) 
             }));
         } else if concl.head.is(&*HAS_PROOF) {
             Pattern::from_with_vars(t, true, &mut vars);
+            tracing::debug!("New dynamic provability rule: {:?}", t.debug_short());
             rules.push_proof(Box::new(GenericProof {
                 vars: vars.into_boxed_slice(),
                 premises: premises.into_boxed_slice(),
@@ -104,6 +109,11 @@ pub fn parse<Split: SplitStrategy>(params: &[Term], rules: &mut RuleSet<Split>) 
         if concl.head.is(&*HAS_TYPE) {
             Pattern::from_with_vars(a, true, &mut vars);
             Pattern::from_with_vars(b, true, &mut vars);
+            tracing::debug!(
+                "New dynamic typing rule: {:?}  :  {:?}",
+                a.debug_short(),
+                b.debug_short()
+            );
             rules.push_checking(Box::new(GenericTyping {
                 vars: vars.into_boxed_slice(),
                 premises: premises.into_boxed_slice(),
@@ -112,6 +122,11 @@ pub fn parse<Split: SplitStrategy>(params: &[Term], rules: &mut RuleSet<Split>) 
         } else if concl.head.is(&*SUBTYPE) {
             Pattern::from_with_vars(a, true, &mut vars);
             Pattern::from_with_vars(b, true, &mut vars);
+            tracing::debug!(
+                "New dynamic subtyping rule: {:?}  <:  {:?}",
+                a.debug_short(),
+                b.debug_short()
+            );
             rules.push_subtyping(Box::new(GenericSubtyping {
                 vars: vars.into_boxed_slice(),
                 premises: premises.into_boxed_slice(),
@@ -120,6 +135,11 @@ pub fn parse<Split: SplitStrategy>(params: &[Term], rules: &mut RuleSet<Split>) 
         } else if concl.head.is(&*SIMPLIFY) {
             Pattern::from_with_vars(a, true, &mut vars);
             Pattern::from_with_vars(b, true, &mut vars);
+            tracing::debug!(
+                "New dynamic simplification rule: {:?}  -->  {:?}",
+                a.debug_short(),
+                b.debug_short()
+            );
             rules.push_simplification(Box::new(GenericSimplification {
                 vars: vars.into_boxed_slice(),
                 premises: premises.into_boxed_slice(),
@@ -128,6 +148,11 @@ pub fn parse<Split: SplitStrategy>(params: &[Term], rules: &mut RuleSet<Split>) 
         } else if concl.head.is(&*EQUAL) {
             Pattern::from_with_vars(a, true, &mut vars);
             Pattern::from_with_vars(b, true, &mut vars);
+            tracing::debug!(
+                "New dynamic equality rule: {:?}  ==  {:?}",
+                a.debug_short(),
+                b.debug_short()
+            );
             rules.push_equality(Box::new(GenericEquality {
                 vars: vars.into_boxed_slice(),
                 premises: premises.into_boxed_slice(),
@@ -138,6 +163,7 @@ pub fn parse<Split: SplitStrategy>(params: &[Term], rules: &mut RuleSet<Split>) 
         {
             let b = undo_implicits(b).unwrap_or_else(|| b.clone());
             Pattern::from_with_vars(&b, true, &mut vars);
+            tracing::debug!("New dynamic preparation rule: {:?}", b.debug_short());
             rules.push_preparation(Box::new(GenericBindPrep {
                 vars: vars.into_boxed_slice(),
                 premises: premises.into_boxed_slice(),
@@ -148,10 +174,10 @@ pub fn parse<Split: SplitStrategy>(params: &[Term], rules: &mut RuleSet<Split>) 
 }
 
 fn undo_implicits(term: &Term) -> Option<Term> {
-    if let Some((head, _)) = term.unapply_implicits() {
+    if let Some((head, _)) = term.unapply_implicits(false) {
         Some(head.clone())
     } else if let Term::Application(app) = term
-        && let Some((head, _)) = app.head.unapply_implicits()
+        && let Some((head, _)) = app.head.unapply_implicits(false)
     {
         Some(Term::Application(ApplicationTerm::new(
             head.clone(),
@@ -159,7 +185,7 @@ fn undo_implicits(term: &Term) -> Option<Term> {
             app.presentation.clone(),
         )))
     } else if let Term::Bound(app) = term
-        && let Some((head, _)) = app.head.unapply_implicits()
+        && let Some((head, _)) = app.head.unapply_implicits(false)
     {
         Some(Term::Bound(BindingTerm::new(
             head.clone(),
@@ -172,7 +198,7 @@ fn undo_implicits(term: &Term) -> Option<Term> {
 }
 
 macro_rules! judg {
-    ($($name:ident($concl:ty $(>$prec:literal)?):$rl:ident { $($impl:tt)* }),*$(,)?) => {
+    ($($name:ident($concl:ty $(>$prec:literal)?):$rl:ident { $($impl:tt)* } => $slf:ident{$($disp:tt)*} ),*$(,)?) => {
         $(
             #[derive(Clone,Debug,PartialEq,Eq)]
             struct $name {
@@ -181,8 +207,10 @@ macro_rules! judg {
                 concl: $concl,
             }
             impl SizedSolverRule for $name {
+                #[allow(unused_variables)]
                 fn display(&self) -> Vec<ftml_solver_trace::Displayable> {
-                    ftml_solver_trace::trace!("Dynamic Rule")
+                    let $slf = self;
+                    $($disp)*
                 }
                 $(
                     fn priority(&self) -> isize {
@@ -215,7 +243,7 @@ judg! {
                 Some(true)
             }
         }
-    },
+    } => slf { ftml_solver_trace::trace!("Dynamic Rule") },
 
     GenericUniverse(Term): UniverseRule {
         fn applicable(&self, term: &Term) -> bool {
@@ -231,7 +259,7 @@ judg! {
                 Some(true)
             }
         }
-    },
+    } => slf { ftml_solver_trace::trace!("Dynamic Rule") },
 
     GenericProof(Term): ProofRule {
         fn applicable(&self, term: &Term) -> bool {
@@ -247,7 +275,7 @@ judg! {
                 Some(ftml_uris::metatheory::AUTO_PROVE.clone().into())
             }
         }
-    },
+    } => slf { ftml_solver_trace::trace!("Dynamic Rule") },
 
     GenericBindPrep((Variable,Term) > 100_000): PreparationRule {
         fn applicable(&self, checker: &CheckRef<'_, '_, Split>, t: &Term) -> bool {
@@ -280,7 +308,6 @@ judg! {
                     }),
                     _ => false,
                 })
-
         }
         fn apply(
             &self,
@@ -405,7 +432,7 @@ judg! {
             std::ops::ControlFlow::Continue(t)
         }
 
-    },
+    } => slf { ftml_solver_trace::trace!("Dynamic Rule") },
 
     GenericTyping((Term,Term)): CheckingRule {
         fn applicable(&self, _: &CheckRef<'_, '_, Split>, term: &Term, tp: &Term) -> bool {
@@ -431,7 +458,8 @@ judg! {
                 Some(true)
             }
         }
-    },
+    } => slf { ftml_solver_trace::trace!("Dynamic Rule") },
+
     GenericSubtyping((Term,Term)): SubtypeRule {
         fn applicable(&self, _: &CheckRef<'_, '_, Split>, sub: &Term, sup: &Term) -> bool {
             let (a,b) = &self.concl;
@@ -456,7 +484,7 @@ judg! {
                 Some(true)
             }
         }
-    },
+    } => slf { ftml_solver_trace::trace!("Dynamic Rule") },
 
     GenericEquality((Term,Term)): EqualityRule {
         fn applicable(&self, lhs: &Term, rhs: &Term) -> bool {
@@ -482,7 +510,7 @@ judg! {
                 Some(true)
             }
         }
-    },
+    } => slf { ftml_solver_trace::trace!("Dynamic Rule") },
 
     GenericSimplification((Term,Term)): SimplificationRule {
         fn applicable(&self, term: &Term) -> bool {
@@ -498,15 +526,35 @@ judg! {
             Pattern::match_i(term,a,&self.vars,true,&mut vars,&mut Alpha::new()).ok_or(None)?;
             //Pattern::match_i(rhs,b,&self.vars,true,&mut vars,&mut Alpha::new()).ok_or(None)?;
             let mut conc = self.vars.iter().cloned().zip(vars.into_iter().map(|o| o.map(Cow::into_owned))).collect::<Vec<_>>();
-            for p in &self.premises {
+            for (i,p) in self.premises.iter().enumerate() {
+                checker.comment(format!("Premise {}",i+1));
                 if p.check(&mut conc, &mut checker) != Some(true) { return Err(None);}
             }
             if conc.iter().any(|(v,o)| !is_solvable_id(v) && o.is_none()) {return Err(None)}
             let subst = conc.iter().filter_map(|(v,o)| if is_solvable_id(v) && o.is_none() {
                 Some((v.as_ref(),Cow::Owned(checker.new_solvable())))
             } else {o.as_ref().map(|t| (v.as_ref(),Cow::Borrowed(t)))}).collect::<Vec<_>>();
-            Ok(b.clone() / subst.as_slice())
+            let ret = b.clone() / subst.as_slice();
+            checker.add_msg(CheckLogCow::Borrowed(RefCheckLog::Msg(vec!["Result: ".into(),ret.clone().into()], ftml_solver_trace::MessageLevel::Comment)));
+            //println!("HERE RETURN: {:?}",(b.clone() / subst.as_slice()).debug_short());
+            Ok(ret)
         }
+    } => slf {
+        let mut ret = vec!["Dynamic rule: ".into()];
+        if !slf.premises.is_empty() {
+            ret.push("[ ".into());
+            let mut first = true;
+            for p in &slf.premises {
+                if !first {
+                    ret.push(", ".into());
+                }
+                first = false;
+                p.disps(&mut ret);
+            }
+            ret.push(" ] ".into());
+        }
+        ret.extend(["⊢ ".into(),slf.concl.0.clone().into(),"  ==>  ".into(),slf.concl.1.clone().into()]);
+        ret
     },
 }
 
@@ -543,6 +591,31 @@ pub enum Premise {
     Equal(Term, Term),
 }
 impl Premise {
+    fn disps(&self, target: &mut Vec<Displayable>) {
+        match self {
+            Self::Inhabitable(t) => target.extend(["⊢ INH ".into(), t.clone().into()]),
+            Self::Universe(t) => target.extend(["⊢ UNIV ".into(), t.clone().into()]),
+            Self::HasProof(t) => target.extend(["⊢ PROOF ".into(), t.clone().into()]),
+            Self::HasType(t1, t2) => target.extend([
+                "⊢".into(),
+                t1.clone().into(),
+                " : ".into(),
+                t2.clone().into(),
+            ]),
+            Self::Subtype(t1, t2) => target.extend([
+                "⊢".into(),
+                t1.clone().into(),
+                " <: ".into(),
+                t2.clone().into(),
+            ]),
+            Self::Equal(t1, t2) => target.extend([
+                "⊢".into(),
+                t1.clone().into(),
+                " == ".into(),
+                t2.clone().into(),
+            ]),
+        }
+    }
     fn parse(t: &Term, vars: &mut Vec<Id>) -> Option<Self> {
         let Term::Application(p) = t else { return None };
         if let [Argument::Simple(t)] = &*p.arguments {
@@ -583,6 +656,12 @@ impl Premise {
         context: &mut [(Id, Option<Term>)],
         checker: &mut CheckRef<'_, '_, Split>,
     ) -> Option<bool> {
+        fn has_free(t: &Term, ctx: &[(Id, Option<Term>)]) -> bool {
+            t.free_variables().iter().any(|v| {
+                ctx.iter()
+                    .all(|(a, b)| a.as_ref() != v.name() || b.is_none())
+            })
+        }
         macro_rules! check {
             ($c:ident.$f:ident($($t:ident),+) ) => {{
                 let subst = context.iter().filter_map(|(id,o)| o.as_ref().map(|t| (id.as_ref(),t))).collect::<Vec<_>>();
@@ -597,7 +676,47 @@ impl Premise {
             Self::Universe(t) => check!(c.check_universe(t)),
             Self::HasProof(t) => check!(c.prove(t)).map(|_| true),
             Self::Subtype(a, b) => check!(c.check_subtype(a, b)),
-            Self::Equal(a, b) => check!(c.check_equality(a, b)),
+            Self::Equal(a, b) => {
+                if has_free(b, context) && !has_free(a, context) {
+                    let subst = context
+                        .iter()
+                        .filter_map(|(id, o)| o.as_ref().map(|t| (id.as_ref(), t)))
+                        .collect::<Vec<_>>();
+                    let na = a / subst.as_slice();
+                    let nb = b / subst.as_slice();
+                    let all_vars = nb
+                        .free_variables()
+                        .iter()
+                        .map(|v| v.name_id().into_owned())
+                        .collect::<SmallVec<_, 2>>();
+                    checker.comment(format!(
+                        "matching {:?} against {:?}",
+                        na.debug_short(),
+                        nb.debug_short()
+                    ));
+                    let r = checker.scoped(|ch| {
+                        ch.simplify_until(&na, |_, t| {
+                            #[allow(clippy::option_if_let_else)]
+                            if let Some(r) = Pattern::r#match(t, &nb, &all_vars, true) {
+                                for (name, nt) in all_vars.iter().zip(r) {
+                                    if let Some((_, t)) =
+                                        context.iter_mut().find(|(a, _)| *a == *name)
+                                    {
+                                        *t = nt.map(Cow::into_owned);
+                                    }
+                                }
+                                true
+                            } else {
+                                false
+                            }
+                        })
+                        .is_some()
+                    });
+                    if r { Some(true) } else { None }
+                } else {
+                    check!(c.check_equality(a, b))
+                }
+            }
             Self::HasType(a, b) => {
                 if let Term::Var {
                     variable: Variable::Name { name, .. },
@@ -608,8 +727,10 @@ impl Premise {
                     let nt = check!(c.infer_type(a))?;
                     context.iter_mut().find(|(a, _)| *a == *name)?.1 = Some(nt);
                     Some(true)
-                } else {
+                } else if !has_free(a, context) && !has_free(b, context) {
                     check!(c.check_type(a, b))
+                } else {
+                    None
                 }
             }
         }

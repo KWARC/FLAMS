@@ -13,9 +13,9 @@
  * (particular kind of) [URI] have those represented via the following encoding:
  * - Either `uri=<STRING>` ( a full [URI]), or
  * - `a=<STRING>&rp=<STRING>` (an [ArchiveId] and a relative path to a source file in the archive including file extension)
- *    can be used for  [DocumentUri]s, or
+ *   can be used for  [DocumentUri]s, or
  * - the [URI] components with relevant argument names; e.g. for a [DocumentUri]:
- *    `?a=<STRING>[&p=<STRING>]&l=<LANGUAGE>&d=<NAME>`.
+ *   `?a=<STRING>[&p=<STRING>]&l=<LANGUAGE>&d=<NAME>`.
  *
  * ## Endpoints
  *
@@ -68,16 +68,16 @@
  * | [`/content/legacy/uris`](content::uris()) | GET | | |
 */
 
-use crate::server::files::img_handler;
+use flams_main::server::files::img_handler;
 
 use flams_router_dashboard::{
+    LoginState,
     query::query_api,
     server_fns::{
         self, backend, buildqueue, content, git,
         login::{login, login_state},
         search,
     },
-    LoginState,
 };
 use flams_utils::settings::SettingsSpec;
 use ftml_ontology::narrative::elements::notations::Notation;

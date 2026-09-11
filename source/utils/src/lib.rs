@@ -19,6 +19,8 @@ mod treelike;
 pub mod vecmap;
 //pub mod file_id;
 
+use std::hint::unreachable_unchecked;
+
 pub use parking_lot;
 pub use triomphe;
 
@@ -28,6 +30,55 @@ pub mod prelude {
     pub type HSet<V> = rustc_hash::FxHashSet<V>;
     pub use crate::inner_arc::InnerArc;
     pub use crate::treelike::*;
+}
+
+pub(crate) mod __private {
+    pub trait Sealed {}
+}
+
+pub trait CharExt {
+    fn into_bytes(self) -> arrayvec::ArrayVec<u8, 4>;
+}
+
+impl CharExt for char {
+    fn into_bytes(self) -> arrayvec::ArrayVec<u8, 4> {
+        const TAG_CONT: u8 = 0b1000_0000;
+        const TAG_TWO_B: u8 = 0b1100_0000;
+        const TAG_THREE_B: u8 = 0b1110_0000;
+        const TAG_FOUR_B: u8 = 0b1111_0000;
+        let num = self as u32;
+        let mut ret = arrayvec::ArrayVec::new();
+
+        // SAFETY: character length is between 1 and 4
+        unsafe {
+            match self.len_utf8() {
+                1 => {
+                    #[allow(clippy::cast_possible_truncation)]
+                    ret.push_unchecked(num as u8);
+                }
+                2 => {
+                    ret.push_unchecked((num >> 6 & 0x1F) as u8 | TAG_TWO_B);
+                    ret.push_unchecked((num & 0x3F) as u8 | TAG_CONT);
+                }
+                3 => {
+                    ret.push_unchecked((num >> 12 & 0x0F) as u8 | TAG_THREE_B);
+                    ret.push_unchecked((num >> 6 & 0x3F) as u8 | TAG_CONT);
+                    ret.push_unchecked((num & 0x3F) as u8 | TAG_CONT);
+                }
+                4 => {
+                    ret = [
+                        (num >> 18 & 0x07) as u8 | TAG_FOUR_B,
+                        (num >> 12 & 0x3F) as u8 | TAG_CONT,
+                        (num >> 6 & 0x3F) as u8 | TAG_CONT,
+                        (num & 0x3F) as u8 | TAG_CONT,
+                    ]
+                    .into();
+                }
+                _ => unreachable_unchecked(),
+            }
+        }
+        ret
+    }
 }
 
 #[cfg(target_family = "wasm")]
@@ -353,9 +404,7 @@ macro_rules! impossible {
     (?) => {
         unreachable!()
     };
-    (? $s:literal) => {{
-        panic!($s)
-    }};
+    (? $s:literal) => {{ panic!($s) }};
 }
 
 #[macro_export]

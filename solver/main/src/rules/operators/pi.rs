@@ -918,7 +918,17 @@ impl PiInferenceRule {
         tp: Term,
     ) -> Result<BindingTerm, Term> {
         let Some(nret) = checker.scoped(|checker| {
-            match checker.simplify_until(&tp, |_, t| matches!(t, Term::Bound(_)))? {
+            match checker.simplify_until(&tp, |_, t| {
+                if let Term::Bound(b) = t
+                    && let Term::Symbol { uri, .. } = &b.head
+                {
+                    *uri == *bind_uri
+                        && b.arguments.len() == 2
+                        && matches!(b.arguments.get(1), Some(BoundArgument::Simple(_)))
+                } else {
+                    false
+                }
+            })? {
                 Cow::Borrowed(_) => Some(None),
                 Cow::Owned(tp) => Some(Some(tp)),
             }
@@ -1234,8 +1244,84 @@ impl PiInferenceRule {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EtaRule(pub SymbolUri);
+impl SizedSolverRule for EtaRule {
+    fn display(&self) -> Vec<crate::trace::Displayable> {
+        ftml_solver_trace::trace!(&self.0, " x1:A1,...,xn:An. s(x1,...,xn) ==> s")
+    }
+}
+impl<Split: SplitStrategy> SimplificationRule<Split> for EtaRule {
+    fn applicable(&self, term: &Term) -> bool {
+        fn applicable_inner(idx: usize, term: &Term, slf: &SymbolUri) -> bool {
+            if let Term::Bound(op) = &term
+                && let Term::Symbol { uri, .. } = &op.head
+                && *uri == *slf
+                && op.arguments.len() == 2
+                && let Some(BoundArgument::Bound(v)) = op.arguments.first()
+                && let Some(BoundArgument::Simple(a)) = op.arguments.get(1)
+            {
+                matches!(a,Term::Application(app) if matches!(app.arguments.get(idx),Some(Argument::Simple(Term::Var { variable, .. })) if variable.name() == v.var.name()))
+                    || applicable_inner(idx + 1, a, slf)
+            } else {
+                false
+            }
+        }
+        applicable_inner(0, term, &self.0)
+    }
+    fn apply<'t>(
+        &self,
+        checker: CheckRef<'t, '_, Split>,
+        mut term: &'t Term,
+    ) -> Result<Term, Option<ftml_ontology::terms::termpaths::TermPath>> {
+        let mut vars = Vec::new();
+        loop {
+            let Term::Bound(op) = term else {
+                return Err(None);
+            };
+            let Term::Symbol { uri, .. } = &op.head else {
+                return Err(None);
+            };
+            if *uri != self.0 {
+                return Err(None);
+            };
+            let [BoundArgument::Bound(v), BoundArgument::Simple(body)] = &*op.arguments else {
+                return Err(None);
+            };
+            vars.push(&v.var);
+            match body {
+                Term::Application(app) if app.arguments.len() >= vars.len() => {
+                    let idx = app.arguments.len() - vars.len();
+                    let margs = &app.arguments[idx..];
+                    for (a, v) in margs.iter().zip(vars.iter()) {
+                        if let Argument::Simple(Term::Var { variable, .. }) = a
+                            && variable.name() == v.name()
+                        {
+                            // all good
+                        } else {
+                            return Err(None);
+                        }
+                    }
+                    if idx == 0 {
+                        return Ok(app.head.clone());
+                    }
+                    return Ok(Term::Application(ApplicationTerm::new(
+                        app.head.clone(),
+                        app.arguments.iter().take(idx).cloned().collect(),
+                        None,
+                    )));
+                }
+                _ => term = body,
+            }
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BetaRule(pub SymbolUri);
 impl SizedSolverRule for BetaRule {
+    fn priority(&self) -> isize {
+        100_000_000
+    }
     fn display(&self) -> Vec<crate::trace::Displayable> {
         ftml_solver_trace::trace!("{ a:A } (", &self.0, " x:A. t)(a) ==> t[x/a]")
     }

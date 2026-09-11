@@ -80,7 +80,7 @@ pub async fn reload() -> Result<(), ServerFnError<String>> {
     match LoginState::get_server() {
         LoginState::Admin | LoginState::NoAccounts | LoginState::User { is_admin: true, .. } => {
             let _ = tokio::task::spawn_blocking(move || {
-                GlobalBackend.reset::<flams_system::TokioEngine>();
+                GlobalBackend.reset::<flams_system::TokioEngine>(true);
                 ftml_uris::clear_memory();
                 ftml_ontology::terms::clear_term_cache();
             })

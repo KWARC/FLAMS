@@ -273,7 +273,9 @@ impl Fact {
         };
         let mut type_guards = Vec::new();
         let stp = checker
-            .wrap_none(None, |mut slf| slf.simplify_full(true, tp))
+            .wrap_none(None, |mut slf| {
+                slf.simplify_full(crate::impls::simplify::Expansion::Full, tp)
+            })
             .1;
         let mut curr = stp.as_ref().unwrap_or(tp);
         loop {

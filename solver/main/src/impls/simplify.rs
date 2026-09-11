@@ -4,6 +4,7 @@ use ftml_ontology::terms::{
     ApplicationTerm, Argument, BindingTerm, BoundArgument, ComponentVar, MaybeSequence, Term,
 };
 use ftml_solver_trace::{CheckerRule, CheckingTask, traceref};
+use ftml_uris::Id;
 
 use crate::{
     CheckRef,
@@ -16,11 +17,31 @@ use crate::{
 };
 
 const LOOP_LIMIT: usize = 64;
-const RECURSION_LIMIT: usize = 64;
-const TOTAL_LIMIT: usize = 2048;
+const RECURSION_LIMIT: usize = 128;
+const TOTAL_LIMIT: usize = 4096 * 512;
+
+static NOEXPAND: std::sync::LazyLock<Id> =
+    std::sync::LazyLock::new(|| unsafe { "noexpand".parse().unwrap_unchecked() });
+
+#[derive(Debug, Copy, Clone, PartialEq, Eq)]
+#[allow(clippy::enum_variant_names)]
+pub enum Expansion {
+    Full,
+    NoDefinitionExpansion,
+    NoNoexpands,
+}
+impl Expansion {
+    fn with_defs(self) -> Self {
+        if self == Self::NoNoexpands {
+            Self::NoNoexpands
+        } else {
+            Self::Full
+        }
+    }
+}
 
 impl<'t, Split: SplitStrategy> CheckRef<'t, '_, Split> {
-    pub fn simplify_full(&mut self, expand: bool, term: &'t Term) -> Option<Term> {
+    pub fn simplify_full(&mut self, expand: Expansion, term: &'t Term) -> Option<Term> {
         if matches!(term, Term::Symbol { .. } | Term::Number(_)) {
             return None;
         }
@@ -32,22 +53,38 @@ impl<'t, Split: SplitStrategy> CheckRef<'t, '_, Split> {
     }
     fn simplify_full_first(
         &mut self,
-        expand: bool,
+        expand: Expansion,
         term: &'t Term,
         recursion_limit: &mut usize,
         total_limit: &mut usize,
     ) -> Option<Cow<'t, Term>> {
         match term {
-            Term::Symbol { uri, .. } if expand => self.get_symbol_definiens(uri).map(|t| {
-                self.comment("expanded definition");
-                Some(Cow::Owned(t))
-            })?,
+            Term::Symbol { uri, .. } if expand == Expansion::NoNoexpands => {
+                let s = self.get_symbol(uri).ok()?;
+                if s.data.role.contains(&NOEXPAND) {
+                    None
+                } else {
+                    self.get_symbol_definiens(uri).map(|t| {
+                        self.comment("expanded definition");
+                        Some(Cow::Owned(t))
+                    })?
+                }
+            }
+            Term::Symbol { uri, .. } /*if expand == Expansion::Full*/ => {
+                self.get_symbol_definiens(uri).map(|t| {
+                    self.comment("expanded definition");
+                    Some(Cow::Owned(t))
+                })?
+            }
             Term::Var { variable, .. } => {
                 if let Some(name) = is_solvable_var(variable)
                     && let Some(t) = self.get_solution(name)
                 {
                     Some(Cow::Owned(t))
-                } else if expand && let Some(df) = self.get_var_definiens(variable) {
+                } else if
+                /*expand != Expansion::NoDefinitionExpansion
+                &&*/
+                let Some(df) = self.get_var_definiens(variable) {
                     Some(Cow::Owned(df))
                 } else {
                     //println!("  : None");
@@ -61,7 +98,7 @@ impl<'t, Split: SplitStrategy> CheckRef<'t, '_, Split> {
             Term::Application(app) => {
                 let mut changed = false;
                 let nhead = self
-                    .simplify_full_i(true, &app.head, recursion_limit, total_limit)
+                    .simplify_full_i(expand, &app.head, recursion_limit, total_limit)
                     .map_or(Cow::Borrowed(&app.head), |t| {
                         changed = true;
                         Cow::Owned(t)
@@ -90,7 +127,7 @@ impl<'t, Split: SplitStrategy> CheckRef<'t, '_, Split> {
             Term::Bound(app) => {
                 let mut changed = false;
                 let nhead = self
-                    .simplify_full_i(true, &app.head, recursion_limit, total_limit)
+                    .simplify_full_i(expand.with_defs(), &app.head, recursion_limit, total_limit)
                     .map_or(Cow::Borrowed(&app.head), |t| {
                         changed = true;
                         Cow::Owned(t)
@@ -121,21 +158,36 @@ impl<'t, Split: SplitStrategy> CheckRef<'t, '_, Split> {
     }
     fn simplify_full_i(
         &mut self,
-        expand: bool,
+        expand: Expansion,
         term: &'t Term,
         recursion_limit: &mut usize,
         total_limit: &mut usize,
     ) -> Option<Term> {
+        if expand == Expansion::Full
+            && let Some(r) = self
+                .judgment_cache
+                .get_simplification(term, self.context.as_ref())
+        {
+            return Some(r);
+        }
         tracing::debug!(
-            "Fully Simplifying {:?} (expand:{expand})",
+            "Fully Simplifying {:?} (expand:{expand:?})",
             term.debug_short()
         );
-        if expand && let Some(t) = self.simplify_implicit(term) {
-            //println!("  - implicits: {:?}", t.debug_short());
-            return Some(
-                self.scoped(|slf| slf.simplify_full_i(expand, &t, recursion_limit, total_limit))
-                    .unwrap_or(t),
-            );
+        if
+        /*expand != Expansion::NoDefinitionExpansion
+        &&*/
+        true {
+            match self.simplify_implicit(term) {
+                Ok(Some(t)) => {
+                    let r = self
+                        .scoped(|slf| slf.simplify_full_i(expand, &t, recursion_limit, total_limit))
+                        .unwrap_or(t);
+                    return Some(r);
+                }
+                Ok(None) => (),
+                Err(()) => return None,
+            }
         }
         /*if term.unapply_implicits().is_some() {
             return None;
@@ -163,6 +215,19 @@ impl<'t, Split: SplitStrategy> CheckRef<'t, '_, Split> {
                         None
                     }
                     Cow::Owned(t) => {
+                        /*if loop_limit >= LOOP_LIMIT {
+                            panic!("LOOP_LIMIT");
+                        }
+                        if *recursion_limit >= RECURSION_LIMIT {
+                            panic!("RECURSION_LIMIT");
+                        }
+                        if *total_limit >= TOTAL_LIMIT {
+                            panic!("TOTAL_LIMIT");
+                        }*/
+                        if expand == Expansion::Full {
+                            self.judgment_cache
+                                .add_simplification(term, &t, self.context.as_ref());
+                        }
                         //println!("  : {:?}", t.debug_short());
                         Some(t)
                     }
@@ -177,16 +242,20 @@ impl<'t, Split: SplitStrategy> CheckRef<'t, '_, Split> {
                         *recursion_limit -= 1;
                         None
                     }
-                    Cow::Owned(t) => {
+                    Cow::Owned(mut t) => {
+                        while let Some(r) = self.scoped(|slf| {
+                            slf.simplify_full_i(expand, &t, recursion_limit, total_limit)
+                        }) {
+                            t = r;
+                        }
                         //println!("  : {:?}", t.debug_short());
-                        let r = Some(
-                            self.scoped(|slf| {
-                                slf.simplify_full_i(expand, &t, recursion_limit, total_limit)
-                            })
-                            .unwrap_or(t),
-                        );
+
+                        if expand == Expansion::Full {
+                            self.judgment_cache
+                                .add_simplification(term, &t, self.context.as_ref());
+                        }
                         *recursion_limit -= 1;
-                        r
+                        Some(t)
                     }
                 };
             }
@@ -229,7 +298,7 @@ impl<'t, Split: SplitStrategy> CheckRef<'t, '_, Split> {
                 *recursion_limit -= 1;
                 return None;
             }
-            let Some(next) = self.scoped(|slf| slf.simplify_one(true, &current)) else {
+            let Some(next) = self.scoped(|slf| slf.simplify_one(Expansion::Full, &current)) else {
                 *recursion_limit -= 1;
                 //self.comment(format!("Final simplification: {:?}", current.debug_short()));
                 return None;
@@ -272,7 +341,7 @@ impl<'t, Split: SplitStrategy> CheckRef<'t, '_, Split> {
                 {
                     return Some(r);
                 }
-                self.simplify_one(true, term).and_then(|term| {
+                self.simplify_one(Expansion::Full, term).and_then(|term| {
                     self.scoped(|slf| slf.simplify_rules(rules, &term, applicable, apply))
                 })
             }
@@ -282,12 +351,13 @@ impl<'t, Split: SplitStrategy> CheckRef<'t, '_, Split> {
                 {
                     return Some(r);
                 }
-                slf.simplify_one(true, &term).and_then(|term| {
+                slf.simplify_one(Expansion::Full, &term).and_then(|term| {
                     slf.scoped(|slf| slf.simplify_rules(rules, &term, applicable, apply))
                 })
             }),
             None => {
-                self.failure("No rule applicable");
+                self.failure("No rule applicable (1)");
+                //println!("Here: {}", term.debug_short());
                 None
             }
         }
@@ -309,8 +379,10 @@ impl<'t, Split: SplitStrategy> CheckRef<'t, '_, Split> {
                 if until(self, &t1, &t2) {
                     return Some((t1, t2));
                 }
-                next_left = false;
-                if let Some(next) = self.scoped(|slf| slf.simplify_one(true, &t1)) {
+                if right {
+                    next_left = false;
+                }
+                if let Some(next) = self.scoped(|slf| slf.simplify_one(Expansion::Full, &t1)) {
                     t1 = Cow::Owned(next);
                     continue;
                 }
@@ -321,7 +393,7 @@ impl<'t, Split: SplitStrategy> CheckRef<'t, '_, Split> {
                     return Some((t1, t2));
                 }
                 next_left = true;
-                if let Some(next) = self.scoped(|slf| slf.simplify_one(true, &t2)) {
+                if let Some(next) = self.scoped(|slf| slf.simplify_one(Expansion::Full, &t2)) {
                     t2 = Cow::Owned(next);
                     continue;
                 }
@@ -387,12 +459,18 @@ impl<'t, Split: SplitStrategy> CheckRef<'t, '_, Split> {
                 };
             }
             loop {
+                /*let s = t1.debug_short().to_string();
+                let s2 = t2.debug_short().to_string();
+                if s.contains("\"universal quantifier\"[") || s2.contains("\"universal quantifier\"[") {
+                    println!("Here: {s}  ===  {s2}");
+                }*/
+
                 if next_left && left {
                     set!();
                     if right {
                         next_left = false;
                     }
-                    if let Some(next) = self.scoped(|slf| slf.simplify_one(true, &t1)) {
+                    if let Some(next) = self.scoped(|slf| slf.simplify_one(Expansion::Full, &t1)) {
                         t1 = Cow::Owned(next);
                         continue;
                     }
@@ -403,7 +481,7 @@ impl<'t, Split: SplitStrategy> CheckRef<'t, '_, Split> {
                     if left {
                         next_left = true;
                     }
-                    if let Some(next) = self.scoped(|slf| slf.simplify_one(true, &t2)) {
+                    if let Some(next) = self.scoped(|slf| slf.simplify_one(Expansion::Full, &t2)) {
                         t2 = Cow::Owned(next);
                         continue;
                     }
@@ -416,7 +494,7 @@ impl<'t, Split: SplitStrategy> CheckRef<'t, '_, Split> {
             }
 
             if applicables.is_empty() {
-                self.failure("No rule applicable");
+                self.failure("No rule applicable (2)");
                 self.add_msg(
                     traceref!(FAIL
                         "Final simplifications: ",
@@ -441,7 +519,7 @@ impl<'t, Split: SplitStrategy> CheckRef<'t, '_, Split> {
                 if right {
                     next_left = false;
                 }
-                if let Some(next) = self.scoped(|slf| slf.simplify_one(true, &t1)) {
+                if let Some(next) = self.scoped(|slf| slf.simplify_one(Expansion::Full, &t1)) {
                     t1 = Cow::Owned(next);
                     //set!(NOBREAK);
                     continue;
@@ -452,7 +530,7 @@ impl<'t, Split: SplitStrategy> CheckRef<'t, '_, Split> {
                 if left {
                     next_left = true;
                 }
-                if let Some(next) = self.scoped(|slf| slf.simplify_one(true, &t2)) {
+                if let Some(next) = self.scoped(|slf| slf.simplify_one(Expansion::Full, &t2)) {
                     t2 = Cow::Owned(next);
                     //set!(NOBREAK);
                     continue;
@@ -464,12 +542,12 @@ impl<'t, Split: SplitStrategy> CheckRef<'t, '_, Split> {
             }
             break;
         }
-        self.failure("No rule applicable");
+        self.failure("No rule applicable (3)");
         //println!("}}");
         either::Left(None)
     }
 
-    fn simplify_one(&mut self, expand: bool, term: &'t Term) -> Option<Term> {
+    pub(super) fn simplify_one(&mut self, expand: Expansion, term: &'t Term) -> Option<Term> {
         if term.has_solvable() {
             let nterm = self.subst(term.clone());
             if *term != nterm {
@@ -481,9 +559,27 @@ impl<'t, Split: SplitStrategy> CheckRef<'t, '_, Split> {
         {
             return Some(nterm); //self.scoped(|slf| slf.simplify_one_i(expand, &nterm));
         }
+
+        /*
+        let s = term.debug_short().to_string();
+        if s.contains("\"universal quantifier\"[") {
+            println!("Here: {:?}", term.debug_short());
+        }
+        */
+
+        if
+        /*expand != Expansion::NoDefinitionExpansion
+        &&*/
+        true {
+            match self.simplify_implicit(term) {
+                Ok(Some(t)) => return Some(t),
+                Ok(None) => (),
+                Err(()) => return None,
+            }
+        }
         self.simplify_one_i(expand, term)
     }
-    fn simplify_one_i(&mut self, expand: bool, term: &'t Term) -> Option<Term> {
+    fn simplify_one_i(&mut self, expand: Expansion, term: &'t Term) -> Option<Term> {
         /**/
         let applicables = self
             .top
@@ -512,47 +608,105 @@ impl<'t, Split: SplitStrategy> CheckRef<'t, '_, Split> {
             None => (),
         }
 
+        /*
+        let s = term.debug_short().to_string();
+        if s.contains("\"universal quantifier\"[") {
+            println!("here: {s}");
+        }
+         */
+
         self.simplify_one_default(expand, term)
     }
 
-    pub(crate) fn simplify_implicit(&mut self, term: &'t Term) -> Option<Term> {
-        if let Some((Term::Symbol { uri, .. }, args)) = term.unapply_implicits()
-            && let Some(def) = self.get_symbol_definiens(uri)
-            && let Some((def, vars)) = def.get_bound_implicits()
-            && args.len() == vars.len()
+    fn simplify_morph(&mut self, expand: Expansion, term: &'t Term) -> Option<Term> {
+        let (m, r) = crate::rules::MorphismRule::is_morphism_appl(term, self)?;
+        /*if let Some((m2, r2)) = crate::rules::MorphismRule::is_morphism_appl(r, self)
+            && let Ok(t) = m2.apply(r2, |s| {
+                self.top
+                    .get_symbol_like(s, |t| self.prepare(t, None).1)
+                    .ok()
+            })
+            && *t != *r2
         {
-            let mut substs = Vec::new();
-            for (ComponentVar { var, tp, .. }, arg) in vars.iter().zip(args) {
-                if let Some(tp) = tp {
-                    let tp: Cow<Term> = tp / &*substs;
-                    if self.scoped(|checker| checker.check_type(arg, &tp)) != Some(true) {
-                        return None;
-                    }
-                    substs.push((var.name(), arg));
-                }
-            }
-            let r = def / &*substs;
-            tracing::debug!("Unapplied implicits: {:?}", r.debug_short());
-            Some(r.into_owned())
+            let r = Term::Application(ApplicationTerm::new(
+                m.uri.clone().into(),
+                Box::new([Argument::Simple(t.into_owned())]),
+                None,
+            ));
+            return self.scoped(|slf| slf.simplify_morph(expand, &r));
+        }*/
+        if matches!(r, Term::Symbol { .. })
+            && let Some(nt) = self.simplify_one_default(expand, r)
+            && let Ok(nt) = m.apply(&nt, &mut |s| {
+                self.top
+                    .get_symbol_like(s, |t| self.prepare(t, None).1)
+                    .ok()
+            })
+            && *nt != *term
+        {
+            Some(nt.into_owned())
+        } else if let Ok(Some(nt)) = self.simplify_implicit(r)
+            && let Ok(nt) = m.apply(&nt, &mut |s| {
+                self.top
+                    .get_symbol_like(s, |t| self.prepare(t, None).1)
+                    .ok()
+            })
+            && *nt != *term
+        {
+            Some(nt.into_owned())
         } else {
             None
         }
     }
 
-    fn simplify_one_default(&mut self, expand: bool, term: &'t Term) -> Option<Term> {
-        if expand && let Some(t) = self.simplify_implicit(term) {
+    fn simplify_one_default(&mut self, expand: Expansion, term: &'t Term) -> Option<Term> {
+        if
+        /*expand != Expansion::NoDefinitionExpansion
+        &&*/
+        true {
+            match self.simplify_implicit(term) {
+                Ok(Some(t)) => return Some(t),
+                Ok(None) => (),
+                Err(()) => return None,
+            }
+        }
+        if let Some(t) = self.simplify_morph(expand, term) {
             return Some(t);
         }
         match term {
             // Definition Expansion
-            Term::Symbol { uri, .. } if expand => self.get_symbol_definiens(uri).inspect(|_| {
-                self.comment("expanded definition");
-            }),
-            Term::Var { variable, .. } if expand || is_solvable_var(variable).is_some() => {
+            Term::Symbol { uri, .. } if expand == Expansion::NoNoexpands => {
+                let s = self.get_symbol(uri).ok()?;
+                if s.data.role.contains(&NOEXPAND) {
+                    None
+                } else {
+                    self.get_symbol_definiens(uri).inspect(|_| {
+                        self.comment("expanded definition");
+                    })
+                }
+            }
+            Term::Symbol { uri, .. } /*if expand == Expansion::Full*/ => {
+                self.get_symbol_definiens(uri).inspect(|_| {
+                    self.comment("expanded definition");
+                })
+            }
+            Term::Var { variable, .. }
+                if true/*expand != Expansion::NoDefinitionExpansion*/
+                    || is_solvable_var(variable).is_some() =>
+            {
                 self.get_var_definiens(variable).inspect(|_| {
                     self.comment("expanded definition");
                 })
             }
+
+            Term::Application(app) if self.top.hoas().is_some_and(|h| h.judgment.as_ref().is_some_and(|j|
+                app.head.is(j)
+            )) && let [Argument::Simple(p)] = &*app.arguments => {
+                self.simplify_one(expand, p).map(|r| Term::Application(ApplicationTerm::new(
+                    app.head.clone(),Box::new([Argument::Simple(r)]),app.presentation.clone()
+                )))
+            }
+
             Term::Application(app) => self.simplify_one(expand, &app.head).map(|nh| {
                 Term::Application(ApplicationTerm::new(
                     nh,
@@ -560,7 +714,7 @@ impl<'t, Split: SplitStrategy> CheckRef<'t, '_, Split> {
                     app.presentation.clone(),
                 ))
             }),
-            Term::Bound(app) => self.simplify_one(true, &app.head).map(|nh| {
+            Term::Bound(app) => self.simplify_one(expand.with_defs(), &app.head).map(|nh| {
                 Term::Bound(BindingTerm::new(
                     nh,
                     app.arguments.clone(),
@@ -573,7 +727,7 @@ impl<'t, Split: SplitStrategy> CheckRef<'t, '_, Split> {
 
     fn arg_full(
         &mut self,
-        expand: bool,
+        expand: Expansion,
         arg: &'t Argument,
         recursion_limit: &mut usize,
         total_limit: &mut usize,
@@ -609,7 +763,7 @@ impl<'t, Split: SplitStrategy> CheckRef<'t, '_, Split> {
     }
     fn bound_arg_full(
         &mut self,
-        expand: bool,
+        expand: Expansion,
         arg: &'t BoundArgument,
         recusion_limit: &mut usize,
         total_limit: &mut usize,
@@ -674,7 +828,7 @@ impl<'t, Split: SplitStrategy> CheckRef<'t, '_, Split> {
 
     fn cv_full(
         &mut self,
-        expand: bool,
+        expand: Expansion,
         arg: &'t ComponentVar,
         recursion_limit: &mut usize,
         total_limit: &mut usize,
@@ -708,5 +862,36 @@ impl<'t, Split: SplitStrategy> CheckRef<'t, '_, Split> {
                 })
             }
         }
+    }
+
+    pub(crate) fn simplify_implicit(&mut self, term: &'t Term) -> Result<Option<Term>, ()> {
+        let Some((Term::Symbol { uri, .. }, args)) = term.unapply_implicits(false) else {
+            return Ok(None);
+        };
+        let Some(def) = self.get_symbol_definiens(uri) else {
+            self.comment(format!("Symbol has no definiens: {uri}"));
+            return Err(());
+        };
+        let Some((def, vars)) = def.get_bound_implicits() else {
+            self.failure("definiens has no implicit arguments");
+            return Err(());
+        };
+        if args.len() != vars.len() {
+            self.failure("number of implicit arguments don't match");
+            return Err(());
+        };
+        let mut substs = Vec::new();
+        for (ComponentVar { var, tp, .. }, arg) in vars.iter().zip(args) {
+            if let Some(tp) = tp {
+                let tp: Cow<Term> = tp / &*substs;
+                if self.scoped(|checker| checker.check_type(arg, &tp)) != Some(true) {
+                    return Err(());
+                }
+                substs.push((var.name(), arg));
+            }
+        }
+        let r = def / &*substs;
+        tracing::debug!("Unapplied implicits: {:?}", r.debug_short());
+        Ok(Some(r.into_owned()))
     }
 }

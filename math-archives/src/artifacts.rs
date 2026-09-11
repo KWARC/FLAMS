@@ -104,6 +104,44 @@ impl Artifact for FtmlFile {
     }
 }
 
+#[cfg(feature = "rdf")]
+impl Artifact for Vec<ulo::rdf_types::Triple> {
+    #[inline]
+    fn kind(&self) -> &'static str {
+        "index.ttl"
+    }
+    #[inline]
+    fn as_any_mut(&mut self) -> &mut dyn std::any::Any {
+        self as _
+    }
+    #[inline]
+    fn as_any(&self) -> &dyn std::any::Any {
+        self as _
+    }
+    #[inline]
+    fn into_any(self: Box<Self>) -> Box<dyn std::any::Any> {
+        self as _
+    }
+    fn write(&self, into: &Path) -> Result<(), ArtifactSaveError> {
+        let file = match std::fs::File::create(into) {
+            Ok(f) => f,
+            Err(e) => {
+                return Err(ArtifactSaveError::Other(
+                    format!("error writing rdf: {e}").into(),
+                ));
+            }
+        };
+        let writer = std::io::BufWriter::new(file);
+        let mut writer = oxigraph::io::RdfSerializer::from_format(oxigraph::io::RdfFormat::Turtle)
+            .for_writer(writer);
+        for t in self {
+            let _ = writer.serialize_triple(t);
+        }
+        let _ = writer.finish();
+        Ok(())
+    }
+}
+
 #[derive(Debug)]
 pub struct ContentResult {
     pub body: DocumentRange,

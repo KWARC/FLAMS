@@ -1,4 +1,4 @@
-# debug = true
+# debug = false
 # log_dir = "~/.flams/log"
 # temp_dir = "~/.flams/tmp"
 # embedding_dir = "~/.flams/embedding"

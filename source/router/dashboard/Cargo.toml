@@ -30,7 +30,7 @@ ssr = [
     "flams-router-login/ssr",
     "flams-router-vscode/ssr",
     "flams-router-search/ssr",
-    "flams-flodown/ssr",
+    #"flams-flodown/ssr",
     "dep:flams-search"
 ]
 hydrate = [
@@ -49,7 +49,7 @@ hydrate = [
     "flams-router-login/hydrate",
     "flams-router-vscode/hydrate",
     "flams-router-search/hydrate",
-    "flams-flodown/hydrate",
+    #"flams-flodown/hydrate",
 ]
 docs-only = []
 vectorsearch = ["flams-router-search/vectorsearch"] #,"flams-search/vectorsearch"]
@@ -76,7 +76,7 @@ flams-router-git-components = { workspace = true }
 flams-router-login = { workspace = true }
 flams-router-vscode = { workspace = true }
 flams-router-search = { workspace = true }
-flams-flodown = { workspace = true }
+#flams-flodown = { workspace = true }
 flams-system = { workspace = true, optional = true, features = ["tokio"] }
 flams-git = { workspace = true, optional = true, features = ["gitlab"] }
 flams-search = { workspace = true, optional = true }

@@ -43,7 +43,7 @@ impl TemporaryBackend {
     pub fn reset<A: AsyncEngine>(&self) {
         self.inner.modules.clear();
         self.inner.documents.clear();
-        GlobalBackend.reset::<A>();
+        GlobalBackend.reset::<A>(true);
     }
 
     #[must_use]

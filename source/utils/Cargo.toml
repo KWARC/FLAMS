@@ -1,7 +1,7 @@
 [package]
 name = "flams-utils"
 version = "0.0.1"
-edition = "2021"
+edition = "2024"
 
 [features]
 serde = ["dep:serde","ftml-ontology/serde"]                                  #, "dep:bincode"]
@@ -36,6 +36,9 @@ serde = { workspace = true, optional = true }
 eyre = { workspace = true }
 tokio = { workspace = true, optional = true, features = ["io-util", "rt"] }
 url = { workspace = true, features = ["serde"] }
+
+memchr.workspace = true
+arrayvec.workspace = true
 
 regex = { workspace = true }
 js-regexp = { workspace = true }

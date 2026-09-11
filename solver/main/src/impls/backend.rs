@@ -3,16 +3,14 @@ use dashmap::DashSet;
 use flams_math_archives::backend::{AnyBackend, LocalBackend};
 use ftml_ontology::{
     domain::{
-        SharedDeclaration,
-        declarations::{IsDeclaration, symbols::Symbol},
+        HasDeclarations, SharedDeclaration,
+        declarations::{IsDeclaration, SharedSymbolLike, symbols::Symbol},
         modules::{Module, ModuleLike},
     },
     narrative::{SharedDocumentElement, documents::Document, elements::VariableDeclaration},
     terms::{ComponentVar, Term, Variable},
 };
-use ftml_uris::{
-    DocumentElementUri, IsDomainUri, IsNarrativeUri, LeafUri, ModuleUri, NamedUri, SymbolUri,
-};
+use ftml_uris::{DocumentElementUri, IsDomainUri, IsNarrativeUri, LeafUri, ModuleUri, SymbolUri};
 use std::hint::unreachable_unchecked;
 
 pub fn get_variable(
@@ -77,13 +75,15 @@ impl<Split: SplitStrategy> Checker<Split> {
                 // SAFETY: uri.is_top()
                 unsafe { unreachable_unchecked() }
             };
+            m.initialize(&mut |u| self.get_module_like(u).ok())
+                .map_err(|_| ())?;
             self.modules.insert(m.clone());
             Ok(ModuleLike::Module(m))
         } else {
             // SAFETY: !uri.is_top()
             let inner = unsafe { uri.clone().into_top_symbol().unwrap_unchecked() };
             let m = self.get_module(inner.module_uri())?;
-            m.as_module_like(uri.name()).ok_or(())
+            m.as_module_like(inner.name()).ok_or(())
         }
     }
     pub(crate) fn get_module(&self, uri: &ModuleUri) -> Result<Module, ()> {
@@ -110,6 +110,37 @@ impl<Split: SplitStrategy> Checker<Split> {
             Ok(m)
         }
     }
+    pub fn get_symbol_like(
+        &self,
+        uri: &SymbolUri,
+        prepare: impl Fn(Term) -> Term,
+    ) -> Result<SharedSymbolLike, ()> {
+        if self.current.iter().any(|u| u == uri) {
+            return Err(());
+        }
+        let uri = uri.as_simple_module();
+
+        let Some(d) = self
+            .get_module(&uri.module)
+            .map_err(|_| ())?
+            .get_symbol_like(uri.name())
+        else {
+            return Err(());
+        };
+        if let SharedSymbolLike::Symbol(d) = &d {
+            if let Some(tp) = d.data.tp.get_parsed()
+                && !d.data.tp.has_checked()
+            {
+                d.data.tp.set_checked(prepare(tp.clone()));
+            }
+            if let Some(df) = d.data.df.get_parsed()
+                && !d.data.df.has_checked()
+            {
+                d.data.df.set_checked(prepare(df.clone()));
+            }
+        }
+        Ok(d)
+    }
 
     pub(crate) fn get_symbol(
         &self,
@@ -120,11 +151,7 @@ impl<Split: SplitStrategy> Checker<Split> {
             return Err(());
         }
         let uri = uri.as_simple_module();
-        let Some(d) = self
-            .get_module(&uri.module)
-            .map_err(|_| ())?
-            .get_as::<Symbol>(uri.name())
-        else {
+        let Some(d) = self.get_module(&uri.module)?.get_as::<Symbol>(uri.name()) else {
             return Err(());
         };
         if let Some(tp) = d.data.tp.get_parsed()
@@ -207,18 +234,55 @@ impl<Split: SplitStrategy> CheckRef<'_, '_, Split> {
     }
 
     pub(crate) fn get_symbol_type(&mut self, uri: &SymbolUri) -> Option<Term> {
+        let Ok(s) = self.top.get_symbol_like(uri, |t| self.prepare(t, None).1) else {
+            self.failure(format!("Symbol not found: {uri}"));
+            return None;
+        };
+        match s {
+            SharedSymbolLike::Symbol(s) => s.data.tp.checked_or_parsed().map(|(t, _)| t),
+            SharedSymbolLike::MathStructure(_) => {
+                self.top.rules.inference().iter().find_map(|rl| {
+                    rl.as_any()
+                        .downcast_ref::<super::records::RecordUniverse>()
+                        .map(|rl| rl.0.clone())
+                })
+            }
+            _ => None,
+        }
+
+        /*
         let Ok(s) = self.get_symbol(uri) else {
-            self.failure("Symbol not found");
+            self.failure(format!("Symbol not found: {uri}"));
             return None;
         };
         s.data.tp.checked_or_parsed().map(|(t, _)| t)
+         */
     }
     pub(crate) fn get_symbol_definiens(&mut self, uri: &SymbolUri) -> Option<Term> {
         let Ok(s) = self.get_symbol(uri) else {
-            self.failure("Symbol not found");
+            self.failure(format!("Symbol not found: {uri}"));
             return None;
         };
-        s.data.df.checked_or_parsed().map(|(t, _)| t)
+
+        /*
+        if uri.name.as_ref() == "universal quantifier" {
+            use std::io::{Read, Write};
+            let bt = std::backtrace::Backtrace::force_capture();
+            let bts = bt.to_string();
+            if !bts.contains("simplify_implicit") {
+                println!("----------------------------------------");
+                for l in bts.split('\n').rev() {
+                    println!("{l}");
+                }
+                std::io::stdout().flush();
+                let _ = std::io::stdin().read(&mut [0]);
+            }
+        } */
+        let t = s.data.df.checked_or_parsed();
+        if t.is_none() {
+            self.comment(format!("Symbol has no definiens: {uri}"));
+        }
+        t.map(|(t, _)| t)
     }
 
     /// ### Errors

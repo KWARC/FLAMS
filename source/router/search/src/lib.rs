@@ -1,11 +1,5 @@
 #![recursion_limit = "256"]
 
-#[cfg(any(
-    all(feature = "ssr", feature = "hydrate", not(feature = "docs-only")),
-    not(any(feature = "ssr", feature = "hydrate")),
-))]
-compile_error!("exactly one of the features \"ssr\" or \"hydrate\" must be enabled");
-
 pub mod components;
 pub mod vscode;
 
@@ -29,7 +23,7 @@ pub async fn search_query(
         opts.close(|u| flams_system::backend::backend().get_document(u).ok());
         Searcher::get()
             .query(&query, opts, num_results)
-            .ok_or_else(|| ServerFnError::ServerError("Search error".to_string()))
+            .map_err(|e| ServerFnError::ServerError(format!("Search error: {e}")))
     })
     .await
     .map_err(|e| ServerFnError::ServerError(e.to_string()))?

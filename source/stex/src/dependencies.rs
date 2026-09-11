@@ -1,20 +1,19 @@
-use crate::quickparse::stex::rules;
+use crate::PDFLATEX;
+use crate::quickparse::stex::{DiagnosticLevel, rules};
 use crate::{
+    PDFLATEX_FIRST,
     quickparse::{
         latex::LaTeXParser,
-        stex::{
-            structs::{ModuleReference, STeXParseState, STeXToken},
-            DiagnosticLevel,
-        },
+        stex::structs::{ModuleReference, STeXParseState, STeXToken},
     },
-    PDFLATEX_FIRST,
 };
 use either::Either;
-use flams_math_archives::backend::AnyBackend;
+use flams_math_archives::MathArchive;
+use flams_math_archives::backend::{AnyBackend, LocalBackend};
 use flams_math_archives::formats::{BuildSpec, BuildTargetId, TaskDependency, TaskRef};
-use flams_utils::{parsing::ParseStr, sourcerefs::SourceRange};
+use flams_utils::sourcerefs::{NoPosition, StringRange};
 use ftml_solver::CHECK;
-use ftml_uris::{ArchiveId, DocumentUri, Language, UriWithArchive};
+use ftml_uris::{ArchiveId, DocumentUri, Language, UriPath, UriWithArchive};
 use std::path::Path;
 
 pub enum STeXDependency {
@@ -39,19 +38,17 @@ pub enum STeXDependency {
         archive: Option<ArchiveId>,
         filepath: std::sync::Arc<str>,
     },
+    SRef {
+        filepath: std::sync::Arc<Path>,
+        in_doc: Option<std::sync::Arc<Path>>,
+    },
 }
 
 #[allow(clippy::type_complexity)]
 pub struct DepParser<'a> {
-    parser: LaTeXParser<
-        'a,
-        ParseStr<'a, ()>,
-        STeXToken<()>,
-        fn(String, SourceRange<()>, DiagnosticLevel),
-        STeXParseState<'a, (), ()>,
-    >,
-    stack: Vec<std::vec::IntoIter<STeXToken<()>>>,
-    curr: Option<std::vec::IntoIter<STeXToken<()>>>,
+    parser: LaTeXParser<'a, NoPosition, STeXToken<NoPosition>, STeXParseState<'a, NoPosition, ()>>,
+    stack: Vec<std::vec::IntoIter<STeXToken<NoPosition>>>,
+    curr: Option<std::vec::IntoIter<STeXToken<NoPosition>>>,
 }
 
 pub fn parse_deps<'a>(
@@ -59,13 +56,13 @@ pub fn parse_deps<'a>(
     path: &'a Path,
     doc: &'a DocumentUri,
     backend: &'a AnyBackend,
+    err: &'a mut dyn FnMut(String, StringRange<NoPosition>, DiagnosticLevel),
 ) -> impl Iterator<Item = STeXDependency> + use<'a> {
-    const NOERR: fn(String, SourceRange<()>, DiagnosticLevel) = |_, _, _| {};
     let archive = doc.archive_uri();
     let parser = LaTeXParser::with_rules(
-        ParseStr::new(source),
-        STeXParseState::<(), ()>::new(Some(archive), Some(path), doc, backend, ()),
-        NOERR,
+        source,
+        STeXParseState::<NoPosition, ()>::new(Some(archive), Some(path), doc, backend, ()),
+        err,
         LaTeXParser::default_rules().into_iter().chain([
             ("importmodule", rules::importmodule_deps as _),
             ("requiremodule", rules::importmodule_deps as _),
@@ -78,6 +75,7 @@ pub fn parse_deps<'a>(
             ("stexstyleassertion", rules::stexstyleassertion as _),
             ("stexstyledefinition", rules::stexstyledefinition as _),
             ("stexstyleparagraph", rules::stexstyleparagraph as _),
+            ("sref", rules::sref as _),
         ]),
         LaTeXParser::default_env_rules().into_iter().chain([(
             "smodule",
@@ -95,7 +93,7 @@ pub fn parse_deps<'a>(
 }
 
 impl DepParser<'_> {
-    fn convert(&mut self, t: STeXToken<()>) -> Option<STeXDependency> {
+    fn convert(&mut self, t: STeXToken<NoPosition>) -> Option<STeXDependency> {
         match t {
             STeXToken::ImportModule {
                 module:
@@ -130,13 +128,21 @@ impl DepParser<'_> {
                 archive: uri.archive_id().clone(),
                 module: rel_path,
             }),
+            STeXToken::SRef {
+                target_path,
+                in_doc,
+                ..
+            } => Some(STeXDependency::SRef {
+                filepath: target_path,
+                in_doc: in_doc.map(|(_, p)| p),
+            }),
             STeXToken::Module {
                 /*uri,*/ sig,
                 children,
                 meta_theory,
                 ..
             } => {
-                let old = std::mem::replace(&mut self.curr, Some(children.into_iter()));
+                let old = self.curr.replace(children.into_iter());
                 if let Some(old) = old {
                     self.stack.push(old);
                 }
@@ -153,7 +159,7 @@ impl DepParser<'_> {
                 filepath: filepath.0,
             }),
             STeXToken::Vec(v) => {
-                let old = std::mem::replace(&mut self.curr, Some(v.into_iter()));
+                let old = self.curr.replace(v.into_iter());
                 if let Some(old) = old {
                     self.stack.push(old);
                 }
@@ -205,7 +211,7 @@ pub fn get_deps(task: BuildSpec) -> Vec<(BuildTargetId, TaskDependency)> {
         return deps;
     };
     //let mut yields = Vec::new();
-    for d in parse_deps(&source, path, task.uri, task.backend) {
+    for d in parse_deps(&source, path, task.uri, task.backend, &mut |_, _, _| {}) {
         match d {
             STeXDependency::ImportModule { archive, module }
             | STeXDependency::UseModule { archive, module }
@@ -300,7 +306,53 @@ pub fn get_deps(task: BuildSpec) -> Vec<(BuildTargetId, TaskDependency)> {
                     ));
                 }
             }
-            _ => (),
+            STeXDependency::SRef { filepath, in_doc } => {
+                if let Some((archive, rel_path)) = task
+                    .backend
+                    .archive_of(&filepath, |a, rp| {
+                        let rp = rp.as_os_str().to_str()?;
+                        rp.parse::<UriPath>().ok().map(|p| (a.id().clone(), p))
+                    })
+                    .flatten()
+                {
+                    deps.push((
+                        PDFLATEX.id(),
+                        TaskDependency::Physical {
+                            strict: false,
+                            task: TaskRef {
+                                archive,
+                                rel_path,
+                                target: PDFLATEX_FIRST.id(),
+                            },
+                        },
+                    ));
+                }
+                if let Some(id) = in_doc
+                    && let Some((archive, rel_path)) = task
+                        .backend
+                        .archive_of(&id, |a, rp| {
+                            let rp = rp.as_os_str().to_str()?;
+                            rp.parse::<UriPath>().ok().map(|p| (a.id().clone(), p))
+                        })
+                        .flatten()
+                {
+                    deps.push((
+                        PDFLATEX.id(),
+                        TaskDependency::Physical {
+                            strict: false,
+                            task: TaskRef {
+                                archive,
+                                rel_path,
+                                target: PDFLATEX_FIRST.id(),
+                            },
+                        },
+                    ));
+                }
+            }
+            STeXDependency::Img { .. }
+            | STeXDependency::ImportModule { .. }
+            | STeXDependency::UseModule { .. }
+            | STeXDependency::Inputref { .. } => (),
         }
     }
     deps

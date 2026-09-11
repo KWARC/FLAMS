@@ -1,0 +1,26 @@
+{
+  "db_name": "SQLite",
+  "query": "INSERT INTO users (gitlab_id,name,username,email,avatar_url,can_create_group,can_create_project,secret,secret_hash,is_admin)\n            VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)\n            ON CONFLICT (gitlab_id) DO UPDATE\n            SET name = excluded.name, username = excluded.username, email = excluded.email, avatar_url = excluded.avatar_url, can_create_group = excluded.can_create_group, can_create_project = excluded.can_create_project, secret = excluded.secret, secret_hash = excluded.secret_hash\n            RETURNING id,is_admin",
+  "describe": {
+    "columns": [
+      {
+        "name": "id",
+        "ordinal": 0,
+        "type_info": "Integer"
+      },
+      {
+        "name": "is_admin",
+        "ordinal": 1,
+        "type_info": "Bool"
+      }
+    ],
+    "parameters": {
+      "Right": 10
+    },
+    "nullable": [
+      false,
+      false
+    ]
+  },
+  "hash": "2422fb6d14b0fff2473abf0e8cb9eae9ec111c5f1f47a97eed78e4c37cf96b5a"
+}

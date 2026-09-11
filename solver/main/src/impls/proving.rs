@@ -350,7 +350,7 @@ impl<'t, Split: SplitStrategy> CheckRef<'t, '_, Split> {
 
         //println!("{}", std::backtrace::Backtrace::force_capture());
 
-        let sgoal = self.simplify_full(true, goal);
+        let sgoal = self.simplify_full(crate::impls::simplify::Expansion::Full, goal);
         let goal = sgoal.as_ref().unwrap_or(goal);
 
         /*tracing::debug!(

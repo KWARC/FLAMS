@@ -1,0 +1,80 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT * FROM users",
+  "describe": {
+    "columns": [
+      {
+        "name": "id",
+        "ordinal": 0,
+        "type_info": "Integer"
+      },
+      {
+        "name": "gitlab_id",
+        "ordinal": 1,
+        "type_info": "Integer"
+      },
+      {
+        "name": "name",
+        "ordinal": 2,
+        "type_info": "Text"
+      },
+      {
+        "name": "username",
+        "ordinal": 3,
+        "type_info": "Text"
+      },
+      {
+        "name": "email",
+        "ordinal": 4,
+        "type_info": "Text"
+      },
+      {
+        "name": "avatar_url",
+        "ordinal": 5,
+        "type_info": "Text"
+      },
+      {
+        "name": "can_create_group",
+        "ordinal": 6,
+        "type_info": "Bool"
+      },
+      {
+        "name": "can_create_project",
+        "ordinal": 7,
+        "type_info": "Bool"
+      },
+      {
+        "name": "secret",
+        "ordinal": 8,
+        "type_info": "Text"
+      },
+      {
+        "name": "secret_hash",
+        "ordinal": 9,
+        "type_info": "Blob"
+      },
+      {
+        "name": "is_admin",
+        "ordinal": 10,
+        "type_info": "Bool"
+      }
+    ],
+    "parameters": {
+      "Right": 0
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "26e7e05427bc7dabcd7815d27764fda2baf4cfe60a2d2d6ee2a1f773dccbbce2"
+}

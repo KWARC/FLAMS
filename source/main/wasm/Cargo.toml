@@ -1,0 +1,26 @@
+[package]
+name = "flams-wasm"
+version = "0.0.5"
+edition = "2024"
+description = "𝖥𝖫∀𝖬∫ - Flexiformal Annotation Management System"
+
+[lib]
+name = "flams"
+crate-type = ["cdylib", "rlib"]
+
+[features]
+docs = [
+    "dep:flams-router-dashboard",
+    "dep:flams-utils",
+    "dep:ftml-ontology",
+    "dep:ftml-uris"
+]
+
+[dependencies]
+flams-main = {workspace=true,features=["hydrate"]}
+wasm-bindgen = { workspace = true }
+
+flams-router-dashboard = {workspace=true,optional=true}
+flams-utils = {workspace=true,optional=true}
+ftml-ontology = {workspace=true,optional=true}
+ftml-uris = {workspace=true,optional=true}

@@ -5,7 +5,7 @@ mod temp;
 use crate::{
     Archive, BackendError, BuildableArchive, LocalArchive, MathArchive,
     artifacts::{Artifact, FileOrString},
-    formats::BuildTargetId,
+    formats::{BuildTarget, BuildTargetId},
     manager::ArchiveOrGroup,
     utils::{
         AsyncEngine,
@@ -361,6 +361,11 @@ impl LocalBackend for AnyBackend {
         from: BuildTargetId,
         result: Option<Box<dyn Artifact>>,
     ) -> std::result::Result<(), ArtifactSaveError> {
+        if let Some(rp) = rel_path
+            && let Some(res) = result.as_ref()
+        {
+            save_top(self, in_doc, rp, &**res);
+        }
         match self {
             Self::Global => GlobalBackend.save(in_doc, rel_path, log, from, result),
             Self::Temp(b) => b.save(in_doc, rel_path, log, from, result),
@@ -593,5 +598,11 @@ impl LocalBackend for AnyBackend {
             Self::Temp(b) => either::Left(b.get_var_notations::<E>(uri)),
             _ => either::Right(GlobalBackend.get_var_notations::<E>(uri)),
         }
+    }
+}
+
+fn save_top(slf: &AnyBackend, uri: &DocumentUri, rel_path: &UriPath, result: &dyn Artifact) {
+    for e in inventory::iter::<crate::FlamsExtension>() {
+        (e.on_build_result)(slf, uri, rel_path, result);
     }
 }

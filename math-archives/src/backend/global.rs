@@ -67,19 +67,23 @@ impl GlobalBackend {
     pub fn get(&self) -> &'static ArchiveManager {
         &GLOBAL
     }
-    pub fn initialize<A: AsyncEngine>() {
+    pub fn initialize<A: AsyncEngine>(rdf: bool) {
         Self.load(crate::mathhub::mathhubs());
         #[cfg(feature = "rdf")]
         {
-            A::background(|| Self.triple_store().load_archives(&Self.all_archives()));
+            if rdf {
+                A::background(|| Self.triple_store().load_archives(&Self.all_archives()));
+            }
         }
     }
 
-    pub fn reset<A: AsyncEngine>(self) {
+    pub fn reset<A: AsyncEngine>(self, rdf: bool) {
         self.reinit(|_| (), crate::mathhub::mathhubs());
         #[cfg(feature = "rdf")]
         {
-            A::background(|| Self.triple_store().load_archives(&Self.all_archives()));
+            if rdf {
+                A::background(|| Self.triple_store().load_archives(&Self.all_archives()));
+            }
         }
     }
 }
@@ -582,7 +586,14 @@ impl ArchiveManager {
         get_not: fn(&SharedDocumentElement<T>) -> DataRef<Notation>,
         //get_ref: impl Fn(&DocDataRef<Notation>) -> Result<Notation, BackendError>,
     ) -> impl Iterator<Item = (DocumentElementUri, Notation)> {
-        let q = crate::sparql!(SELECT DISTINCT ?n WHERE { ?n ulo:notation_for iri. });
+        let iricl = iri.clone();
+        let q = crate::sparql!(SELECT DISTINCT ?n WHERE {
+            { ?n ulo:notation_for iricl. } UNION
+            {
+                iri ulo:generated_by ?o .
+                ?n ulo:notation_for ?o.
+            }
+        });
         self.triple_store()
             .query::<E>(q)
             .expect("Notations query should be valid")

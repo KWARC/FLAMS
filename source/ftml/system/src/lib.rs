@@ -11,6 +11,11 @@ use flams_math_archives::{
     source_format, Archive, LocallyBuilt, MathArchive,
 };
 pub use ftml5ever::FtmlResult;
+use ftml_ontology::{
+    domain::{declarations::AnyDeclarationRef, HasDeclarations},
+    utils::RefTree,
+    Ftml,
+};
 use ftml_uris::{DocumentUri, UriWithArchive, UriWithPath};
 
 source_format! { FTML {
@@ -136,7 +141,7 @@ pub fn build_ftml(
     )];
     let path = uri.path().cloned();
     let archive = uri.archive_uri().clone();
-    ftml5ever::run(
+    let mut r = ftml5ever::run(
         html,
         |src| {
             let path = std::path::Path::new(src);
@@ -202,5 +207,17 @@ pub fn build_ftml(
         },
         uri,
         true,
-    )
+    );
+    if let Ok(dr) = r.as_mut() {
+        let content = &mut dr.doc;
+        for m in &content.modules {
+            let _ = m.initialize(&mut |m| backend.get_module(m).ok());
+            for e in m.dfs() {
+                if let AnyDeclarationRef::Morphism(m) = e {
+                    content.triples.extend(m.triples());
+                }
+            }
+        }
+    }
+    r
 }

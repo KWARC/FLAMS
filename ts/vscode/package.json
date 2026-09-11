@@ -2,7 +2,7 @@
   "name": "flams",
   "displayName": "𝖥𝖫∀𝖬∫ - Flexiformal Annotation Management System",
   "description": "IDE for the FLAMS system and sTeX",
-  "version": "0.0.5",
+  "version": "0.0.6",
   "license": "GPL3",
   "publisher": "kwarc",
   "icon": "img/flams.png",
@@ -191,21 +191,20 @@
   },
   "devDependencies": {
     "@types/follow-redirects": "^1.14.4",
-    "@types/node": "22.13.12",
+    "@types/node": "26.0.0",
     "@types/vscode": "^1.94.0",
-    "@types/yauzl": "^2.10.3",
-    "@typescript-eslint/eslint-plugin": "^8.58.2",
-    "@typescript-eslint/parser": "^8.58.2",
-    "@vscode/test-cli": "^0.0.11",
-    "@vscode/test-electron": "^2.5.2",
-    "eslint": "^10.2.0",
-    "ts-loader": "^9.5.7",
-    "typescript": "^6.0.2",
-    "webpack": "^5.106.2",
-    "webpack-cli": "^7.0.2"
+    "@types/yauzl": "^3.4.0",
+    "@typescript-eslint/eslint-plugin": "^8.62.0",
+    "@typescript-eslint/parser": "^8.62.0",
+    "@vscode/test-electron": "^3.0.0",
+    "eslint": "^10.5.0",
+    "ts-loader": "^9.6.2",
+    "typescript": "^6.0.3",
+    "webpack": "^5.107.2",
+    "webpack-cli": "^7.0.3"
   },
   "dependencies": {
-    "@flexiformal/ftml-backend": "=0.0.9",
+    "@flexiformal/ftml-backend": "=0.0.14",
     "@octokit/rest": "^22.0.1",
     "@vscode-elements/elements": "^2.5.1",
     "@vscode/codicons": "^0.0.45",
@@ -213,7 +212,7 @@
     "follow-redirects": "^1.16.0",
     "fs": "^0.0.2",
     "mkdirp": "^3.0.1",
-    "vscode-languageclient": "^9.0.1",
-    "yauzl": "^3.3.0"
+    "vscode-languageclient": "^10.0.1",
+    "yauzl": "^3.4.0"
   }
 }

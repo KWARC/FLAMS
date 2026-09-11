@@ -5,10 +5,18 @@ pub mod capabilities;
 pub mod documents;
 mod implementation;
 pub mod state;
+pub mod verbalizations;
 #[cfg(feature = "ws")]
 pub mod ws;
 
-use std::{collections::hash_map::Entry, path::Path};
+//use dashmap::Entry;
+pub(crate) use std::collections::hash_map::Entry;
+pub(crate) type HMap<A, B> = rustc_hash::FxHashMap<A, B>;
+// pub(crate) type HMap<A,B> = dashmap::DashMap<A,B,rustc_hash::FxHashBuilder>
+pub(crate) type LMap<A, B> = parking_lot::RwLock<HMap<A, B>>;
+// pub(crate) type LMap<A,B> = dashmap::DashMap<A,B,rustc_hash::FxHashBuilder>
+
+use std::path::Path;
 
 pub use async_lsp;
 use async_lsp::{ClientSocket, LanguageClient, lsp_types as lsp};
@@ -20,12 +28,14 @@ use flams_stex::quickparse::stex::{
 use flams_system::settings::Settings;
 use flams_utils::{
     background,
-    prelude::HMap,
-    sourcerefs::{LSPLineCol, SourceRange},
+    parsing::StrParser,
+    sourcerefs::{LSPLineCol, PositionKind, StringRange},
     unwrap,
 };
-use ftml_uris::{ArchiveId, BaseUri, DocumentUri};
+use ftml_uris::{ArchiveId, BaseUri, DocumentUri, Language, SymbolUri};
 use state::{DocData, LSPState, UrlOrFile};
+
+use crate::verbalizations::UnlockedVerbalizationTrie;
 
 static GLOBAL_STATE: std::sync::OnceLock<LSPState> = std::sync::OnceLock::new();
 pub struct STDIOLSPServer {
@@ -212,6 +222,12 @@ impl lsp::notification::Notification for HTMLResult {
     const METHOD: &str = "flams/htmlResult";
 }
 
+pub(crate) struct SnifyNotification;
+impl lsp::notification::Notification for SnifyNotification {
+    type Params = UriParams;
+    const METHOD: &str = "flams/snify";
+}
+
 #[derive(serde::Serialize, serde::Deserialize)]
 pub struct UriParams {
     pub uri: lsp::Url,
@@ -324,6 +340,7 @@ impl<T: FLAMSLSPServer> ServerWrapper<T> {
 
         r.notification::<Reload>(Self::reload);
         r.notification::<StandaloneExport>(Self::export_standalone);
+        r.notification::<SnifyNotification>(Self::snify);
         r.notification::<HtmlExport>(Self::export_html);
         r.notification::<InstallArchives>(Self::install);
         r.notification::<NewArchive>(Self::new_archive);
@@ -345,16 +362,27 @@ impl<T: FLAMSLSPServer> ServerWrapper<T> {
     }
 }
 
-pub struct LSPStore<'a, const FULL: bool> {
+pub struct LSPStore<'a, 'l, const FULL: bool> {
     pub(crate) map: &'a mut HMap<UrlOrFile, DocData>,
+    verbalizations: Option<&'a mut UnlockedVerbalizationTrie<'l>>,
+    ignore_verbalizations: &'a [&'a str],
     cycles: Vec<DocumentUri>,
+    snify: bool,
 }
-impl<'a, const FULL: bool> LSPStore<'a, FULL> {
+impl<'a, 'l, const FULL: bool> LSPStore<'a, 'l, FULL> {
     #[inline]
-    pub fn new(map: &'a mut HMap<UrlOrFile, DocData>) -> Self {
+    pub const fn new(
+        map: &'a mut HMap<UrlOrFile, DocData>,
+        verbalizations: Option<&'a mut UnlockedVerbalizationTrie<'l>>,
+        ignore_verbalizations: &'a [&'a str],
+        snify: bool,
+    ) -> Self {
         Self {
             map,
             cycles: Vec::new(),
+            ignore_verbalizations,
+            verbalizations,
+            snify,
         }
     }
 
@@ -369,7 +397,11 @@ impl<'a, const FULL: bool> LSPStore<'a, FULL> {
         if !FULL {
             self.load(p, uri)
         } else {
-            let mut nstore = LSPStore::<'_, false>::new(self.map);
+            let mut nstore = if let Some(verb) = &mut self.verbalizations {
+                LSPStore::<'_, '_, false>::new(self.map, Some(verb), &[], false)
+            } else {
+                LSPStore::<'_, '_, false>::new(self.map, None, &[], false)
+            };
             nstore.cycles = std::mem::take(&mut self.cycles);
             let r = nstore.load(p, uri);
             self.cycles = nstore.cycles;
@@ -378,7 +410,7 @@ impl<'a, const FULL: bool> LSPStore<'a, FULL> {
     }
 }
 
-impl<const FULL: bool> STeXModuleStore for &mut LSPStore<'_, FULL> {
+impl<const FULL: bool> STeXModuleStore for &mut LSPStore<'_, '_, FULL> {
     const FULL: bool = FULL;
     fn get_module(
         &mut self,
@@ -410,7 +442,7 @@ impl<const FULL: bool> STeXModuleStore for &mut LSPStore<'_, FULL> {
 
         let lsp_uri = UrlOrFile::File(p.clone());
         //let lsp_uri = lsp::Url::from_file_path(p).map_err(|_| GetModuleError::NotFound(module.uri.clone()))?;
-        match self.map.get(&lsp_uri) {
+        match self.map.get(&lsp_uri).as_deref() {
             Some(DocData::Data(d, _)) => do_return!(d.clone()),
             Some(DocData::Doc(d)) if d.is_up_to_date() => do_return!(d.annotations.clone()),
             _ => (),
@@ -439,6 +471,54 @@ impl<const FULL: bool> STeXModuleStore for &mut LSPStore<'_, FULL> {
         self.cycles.pop();
         r.ok_or_else(|| GetModuleError::NotFound(module.uri.clone()))
     }
+    fn add_verbalization(
+        &mut self,
+        s: &str,
+        symbol: &ftml_uris::prelude::SymbolUri,
+        language: Language,
+    ) {
+        if let Some(verb) = &mut self.verbalizations {
+            verb.insert(language, s, symbol);
+        }
+    }
+    fn add_text<Pos: flams_utils::sourcerefs::StringPosition>(
+        &self,
+        r: StringRange<Pos>,
+        text: &str,
+        language: Language,
+        needs_usemodule: &dyn Fn(&SymbolUri) -> bool,
+    ) -> Option<flams_stex::quickparse::stex::structs::STeXToken<Pos>> {
+        //Vec<(StringRange<Pos>, SmallVec<SymbolUri, 1>)> {
+        if self.snify
+            && Pos::KIND == PositionKind::LineColUtf16
+            && Self::FULL
+            && let Some(verb) = &self.verbalizations
+        {
+            let v = verb.find_all_in(
+                language,
+                text,
+                r.start,
+                self.ignore_verbalizations,
+                needs_usemodule,
+            );
+            if v.is_empty() {
+                None
+            } else {
+                Some(flams_stex::quickparse::stex::structs::STeXToken::Vec(
+                    v.into_iter()
+                        .map(|(r, s)| {
+                            flams_stex::quickparse::stex::structs::STeXToken::SnifySuggestion {
+                                range: r,
+                                symbols: s,
+                            }
+                        })
+                        .collect(),
+                ))
+            }
+        } else {
+            None
+        }
+    }
 }
 
 pub trait IsLSPRange {
@@ -446,7 +526,7 @@ pub trait IsLSPRange {
     fn from_range(range: lsp::Range) -> Self;
 }
 
-impl IsLSPRange for SourceRange<LSPLineCol> {
+impl IsLSPRange for StringRange<LSPLineCol> {
     fn into_range(self) -> lsp::Range {
         lsp::Range {
             start: lsp::Position {
@@ -461,14 +541,8 @@ impl IsLSPRange for SourceRange<LSPLineCol> {
     }
     fn from_range(range: lsp::Range) -> Self {
         Self {
-            start: LSPLineCol {
-                line: range.start.line,
-                col: range.start.character,
-            },
-            end: LSPLineCol {
-                line: range.end.line,
-                col: range.end.character,
-            },
+            start: LSPLineCol::new(range.start.line, range.start.character),
+            end: LSPLineCol::new(range.end.line, range.end.character),
         }
     }
 }

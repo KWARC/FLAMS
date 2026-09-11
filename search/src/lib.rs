@@ -209,14 +209,15 @@ impl Searcher {
         s: &str,
         mut opts: FragmentQueryFilter,
         num_results: usize,
-    ) -> Option<Vec<(f32, SearchResult)>> {
+    ) -> Result<Vec<(f32, SearchResult)>, String> {
         SPAN.in_scope(move || {
             let searcher = self.reader.read().searcher();
             let in_documents = std::mem::take(&mut opts.in_documents)
                 .into_iter()
                 .map(|u| u.to_string())
                 .collect::<Vec<_>>();
-            let query = query::build_query(s, &self.index.read(), opts)?;
+            let query = query::build_query(s, &self.index.read(), opts)
+                .ok_or_else(|| "erro building query".to_string())?;
             let top_num = if num_results == 0 {
                 usize::MAX / 2
             } else {
@@ -225,9 +226,11 @@ impl Searcher {
             let mut ret = Vec::new();
             let iter = if in_documents.is_empty() {
                 searcher
-                    .search(&*query, &tantivy::collector::TopDocs::with_limit(top_num))
-                    .map_err(|e| tracing::error!("Search Error A: {e}"))
-                    .ok()?
+                    .search(
+                        &*query,
+                        &tantivy::collector::TopDocs::with_limit(top_num).order_by_score(),
+                    )
+                    .map_err(|e| e.to_string())?
             } else {
                 searcher
                     .search(
@@ -237,24 +240,20 @@ impl Searcher {
                             move |u: &[u8]| {
                                 in_documents.iter().any(|d| u.starts_with(d.as_bytes()))
                             },
-                            tantivy::collector::TopDocs::with_limit(top_num),
+                            tantivy::collector::TopDocs::with_limit(top_num).order_by_score(),
                         ),
                     )
-                    .map_err(|e| tracing::error!("Search Error B: {e}"))
-                    .ok()?
+                    .map_err(|e| e.to_string())?
             };
             for (s, a) in iter {
-                let Ok(doc) = searcher
-                    .doc::<tantivy::schema::TantivyDocument>(a)
-                    .map_err(|e| tracing::error!("Search Error: {e}"))
-                else {
+                let Ok(doc) = searcher.doc::<tantivy::schema::TantivyDocument>(a) else {
                     continue;
                 };
                 if let Some(doc) = SearchIndex::from_document(doc) {
                     ret.push((s, doc));
                 };
             }
-            Some(ret)
+            Ok(ret)
         })
     }
 
@@ -285,7 +284,7 @@ impl Searcher {
             for (score, a) in searcher
                 .search(
                     &*query,
-                    &tantivy::collector::TopDocs::with_limit(top_num * 3),
+                    &tantivy::collector::TopDocs::with_limit(top_num * 3).order_by_score(),
                 )
                 .map_err(|e| tracing::error!("Search Error A: {e}"))
                 .ok()?
@@ -395,9 +394,9 @@ impl Searcher {
         s: &str,
         opts: FragmentQueryFilter,
         num_results: usize,
-    ) -> Option<Vec<(f32, SearchResult)>> {
+    ) -> Result<Vec<(f32, SearchResult)>, String> {
         // SAFETY: invariant: input.len() == output.len()
-        let query = unsafe { crate::Embedder::embed([s]).ok()?.pop().unwrap_unchecked() };
+        let query = unsafe { crate::Embedder::embed([s])?.pop().unwrap_unchecked() };
         let top_num = if num_results == 0 {
             usize::MAX / 2
         } else {
@@ -457,7 +456,7 @@ impl Searcher {
             }
         }
         drop(searcher);
-        Some(ret)
+        Ok(ret)
     }
 }
 

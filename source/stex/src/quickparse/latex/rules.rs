@@ -2,139 +2,110 @@ use crate::quickparse::{
     latex::{FromLaTeXToken, LaTeXParser, Macro},
     stex::DiagnosticLevel,
 };
-use flams_utils::{
-    parsing::{ParseSource, StringOrStr},
-    sourcerefs::{SourcePos, SourceRange},
-};
+use flams_utils::{parsing::SourceParser, sourcerefs::StringPosition};
 
 use super::{Environment, ParserState};
 
 #[derive(Debug)]
-pub enum MacroResult<'a, Pos: SourcePos, Str: StringOrStr<'a>, T: FromLaTeXToken<'a, Pos, Str>> {
+pub enum MacroResult<'a, Pos: StringPosition, T: FromLaTeXToken<'a, Pos>> {
     Success(T),
-    Simple(Macro<'a, Pos, Str>),
+    Simple(Macro<'a, Pos>),
     Other(Vec<T>),
 }
 
 #[derive(Debug)]
-pub enum EnvironmentResult<
-    'a,
-    Pos: SourcePos,
-    Str: StringOrStr<'a>,
-    T: FromLaTeXToken<'a, Pos, Str>,
-> {
+pub enum EnvironmentResult<'a, Pos: StringPosition, T: FromLaTeXToken<'a, Pos>> {
     Success(T),
-    Simple(Environment<'a, Pos, Str, T>),
+    Simple(Environment<'a, Pos, T>),
     Other(Vec<T>),
 }
 
 pub type MacroRule<
     'a,
-    Pa: ParseSource<'a>,
-    T: FromLaTeXToken<'a, Pa::Pos, Pa::Str>,
-    Err: FnMut(String, SourceRange<Pa::Pos>, DiagnosticLevel),
-    State: ParserState<'a, Pa, T, Err>,
-> = fn(
-    Macro<'a, Pa::Pos, Pa::Str>,
-    &mut LaTeXParser<'a, Pa, T, Err, State>,
-) -> MacroResult<'a, Pa::Pos, Pa::Str, T>;
+    Pos: StringPosition,
+    T: FromLaTeXToken<'a, Pos>,
+    State: ParserState<'a, Pos, T>,
+> = fn(Macro<'a, Pos>, &mut LaTeXParser<'a, Pos, T, State>) -> MacroResult<'a, Pos, T>;
 
 pub type EnvOpenRule<
     'a,
-    Pa: ParseSource<'a>,
-    T: FromLaTeXToken<'a, Pa::Pos, Pa::Str>,
-    Err: FnMut(String, SourceRange<Pa::Pos>, DiagnosticLevel),
-    State: ParserState<'a, Pa, T, Err>,
-> = for<'b, 'c> fn(
-    &'b mut Environment<'a, Pa::Pos, Pa::Str, T>,
-    &'c mut LaTeXParser<'a, Pa, T, Err, State>,
-);
+    Pos: StringPosition,
+    T: FromLaTeXToken<'a, Pos>,
+    State: ParserState<'a, Pos, T>,
+> = for<'b, 'c> fn(&'b mut Environment<'a, Pos, T>, &'c mut LaTeXParser<'a, Pos, T, State>);
 
 pub type EnvCloseRule<
     'a,
-    Pa: ParseSource<'a>,
-    T: FromLaTeXToken<'a, Pa::Pos, Pa::Str>,
-    Err: FnMut(String, SourceRange<Pa::Pos>, DiagnosticLevel),
-    State: ParserState<'a, Pa, T, Err>,
+    Pos: StringPosition,
+    T: FromLaTeXToken<'a, Pos>,
+    State: ParserState<'a, Pos, T>,
 > = for<'b> fn(
-    Environment<'a, Pa::Pos, Pa::Str, T>,
-    &'b mut LaTeXParser<'a, Pa, T, Err, State>,
-) -> EnvironmentResult<'a, Pa::Pos, Pa::Str, T>;
+    Environment<'a, Pos, T>,
+    &'b mut LaTeXParser<'a, Pos, T, State>,
+) -> EnvironmentResult<'a, Pos, T>;
 
 pub type EnvironmentRule<
     'a,
-    Pa: ParseSource<'a>,
-    T: FromLaTeXToken<'a, Pa::Pos, Pa::Str>,
-    Err: FnMut(String, SourceRange<Pa::Pos>, DiagnosticLevel),
-    State: ParserState<'a, Pa, T, Err>,
+    Pos: StringPosition,
+    T: FromLaTeXToken<'a, Pos>,
+    State: ParserState<'a, Pos, T>,
 > = (
-    EnvOpenRule<'a, Pa, T, Err, State>,
-    EnvCloseRule<'a, Pa, T, Err, State>,
+    EnvOpenRule<'a, Pos, T, State>,
+    EnvCloseRule<'a, Pos, T, State>,
 );
 
 #[allow(clippy::type_complexity)]
 pub struct DynMacro<
     'a,
-    Pa: ParseSource<'a>,
-    T: FromLaTeXToken<'a, Pa::Pos, Pa::Str>,
-    Err: FnMut(String, SourceRange<Pa::Pos>, DiagnosticLevel),
-    State: ParserState<'a, Pa, T, Err>,
+    Pos: StringPosition,
+    T: FromLaTeXToken<'a, Pos>,
+    State: ParserState<'a, Pos, T>,
     Arg,
 > {
-    pub ptr: fn(
-        &Arg,
-        Macro<'a, Pa::Pos, Pa::Str>,
-        &mut LaTeXParser<'a, Pa, T, Err, State>,
-    ) -> MacroResult<'a, Pa::Pos, Pa::Str, T>,
+    pub ptr:
+        fn(&Arg, Macro<'a, Pos>, &mut LaTeXParser<'a, Pos, T, State>) -> MacroResult<'a, Pos, T>,
     pub arg: Arg,
 }
 
 #[allow(clippy::type_complexity)]
 pub struct DynEnv<
     'a,
-    Pa: ParseSource<'a>,
-    T: FromLaTeXToken<'a, Pa::Pos, Pa::Str>,
-    Err: FnMut(String, SourceRange<Pa::Pos>, DiagnosticLevel),
-    State: ParserState<'a, Pa, T, Err>,
+    Pos: StringPosition,
+    T: FromLaTeXToken<'a, Pos>,
+    State: ParserState<'a, Pos, T>,
     Arg,
 > {
     pub open: for<'b, 'c> fn(
         &Arg,
-        &'b mut Environment<'a, Pa::Pos, Pa::Str, T>,
-        &'c mut LaTeXParser<'a, Pa, T, Err, State>,
+        &'b mut Environment<'a, Pos, T>,
+        &'c mut LaTeXParser<'a, Pos, T, State>,
     ),
     pub close: for<'b> fn(
-        Environment<'a, Pa::Pos, Pa::Str, T>,
-        &'b mut LaTeXParser<'a, Pa, T, Err, State>,
-    ) -> EnvironmentResult<'a, Pa::Pos, Pa::Str, T>,
+        Environment<'a, Pos, T>,
+        &'b mut LaTeXParser<'a, Pos, T, State>,
+    ) -> EnvironmentResult<'a, Pos, T>,
     pub arg: Arg,
 }
 
 pub enum AnyMacro<
     'a,
-    Pa: ParseSource<'a>,
-    T: FromLaTeXToken<'a, Pa::Pos, Pa::Str>,
-    Err: FnMut(String, SourceRange<Pa::Pos>, DiagnosticLevel),
-    State: ParserState<'a, Pa, T, Err>,
+    Pos: StringPosition,
+    T: FromLaTeXToken<'a, Pos>,
+    State: ParserState<'a, Pos, T>,
 > {
-    Ptr(MacroRule<'a, Pa, T, Err, State>),
-    Str(DynMacro<'a, Pa, T, Err, State, Pa::Str>),
-    Ext(DynMacro<'a, Pa, T, Err, State, State::MacroArg>),
+    Ptr(MacroRule<'a, Pos, T, State>),
+    Str(DynMacro<'a, Pos, T, State, &'a str>),
+    Ext(DynMacro<'a, Pos, T, State, State::MacroArg>),
 }
 
-impl<
-        'a,
-        Pa: ParseSource<'a>,
-        T: FromLaTeXToken<'a, Pa::Pos, Pa::Str>,
-        Err: FnMut(String, SourceRange<Pa::Pos>, DiagnosticLevel),
-        State: ParserState<'a, Pa, T, Err>,
-    > AnyMacro<'a, Pa, T, Err, State>
+impl<'a, Pos: StringPosition, T: FromLaTeXToken<'a, Pos>, State: ParserState<'a, Pos, T>>
+    AnyMacro<'a, Pos, T, State>
 {
     pub fn call(
         &self,
-        m: Macro<'a, Pa::Pos, Pa::Str>,
-        p: &mut LaTeXParser<'a, Pa, T, Err, State>,
-    ) -> MacroResult<'a, Pa::Pos, Pa::Str, T> {
+        m: Macro<'a, Pos>,
+        p: &mut LaTeXParser<'a, Pos, T, State>,
+    ) -> MacroResult<'a, Pos, T> {
         match self {
             Self::Ptr(ptr) => ptr(m, p),
             Self::Str(str) => (str.ptr)(&str.arg, m, p),
@@ -143,13 +114,8 @@ impl<
     }
 }
 
-impl<
-        'a,
-        Pa: ParseSource<'a>,
-        T: FromLaTeXToken<'a, Pa::Pos, Pa::Str>,
-        Err: FnMut(String, SourceRange<Pa::Pos>, DiagnosticLevel),
-        State: ParserState<'a, Pa, T, Err>,
-    > Clone for AnyMacro<'a, Pa, T, Err, State>
+impl<'a, Pos: StringPosition, T: FromLaTeXToken<'a, Pos>, State: ParserState<'a, Pos, T>> Clone
+    for AnyMacro<'a, Pos, T, State>
 {
     fn clone(&self) -> Self {
         match self {
@@ -166,30 +132,20 @@ impl<
     }
 }
 
-pub enum AnyEnv<
-    'a,
-    Pa: ParseSource<'a>,
-    T: FromLaTeXToken<'a, Pa::Pos, Pa::Str>,
-    Err: FnMut(String, SourceRange<Pa::Pos>, DiagnosticLevel),
-    State: ParserState<'a, Pa, T, Err>,
-> {
-    Ptr(EnvironmentRule<'a, Pa, T, Err, State>),
-    Str(DynEnv<'a, Pa, T, Err, State, Pa::Str>),
-    Ext(DynEnv<'a, Pa, T, Err, State, State::MacroArg>),
+pub enum AnyEnv<'a, Pos: StringPosition, T: FromLaTeXToken<'a, Pos>, State: ParserState<'a, Pos, T>>
+{
+    Ptr(EnvironmentRule<'a, Pos, T, State>),
+    Str(DynEnv<'a, Pos, T, State, &'a str>),
+    Ext(DynEnv<'a, Pos, T, State, State::MacroArg>),
 }
 
-impl<
-        'a,
-        Pa: ParseSource<'a>,
-        T: FromLaTeXToken<'a, Pa::Pos, Pa::Str>,
-        Err: FnMut(String, SourceRange<Pa::Pos>, DiagnosticLevel),
-        State: ParserState<'a, Pa, T, Err>,
-    > AnyEnv<'a, Pa, T, Err, State>
+impl<'a, Pos: StringPosition, T: FromLaTeXToken<'a, Pos>, State: ParserState<'a, Pos, T>>
+    AnyEnv<'a, Pos, T, State>
 {
     pub fn open<'b, 'c>(
         &self,
-        e: &'b mut Environment<'a, Pa::Pos, Pa::Str, T>,
-        p: &'c mut LaTeXParser<'a, Pa, T, Err, State>,
+        e: &'b mut Environment<'a, Pos, T>,
+        p: &'c mut LaTeXParser<'a, Pos, T, State>,
     ) {
         match self {
             Self::Ptr((ptr, _)) => ptr(e, p),
@@ -197,7 +153,7 @@ impl<
             Self::Ext(ext) => (ext.open)(&ext.arg, e, p),
         }
     }
-    pub fn close(self) -> EnvCloseRule<'a, Pa, T, Err, State> {
+    pub fn close(self) -> EnvCloseRule<'a, Pos, T, State> {
         match self {
             Self::Ptr((_, close)) => close,
             Self::Str(str) => str.close,
@@ -206,13 +162,8 @@ impl<
     }
 }
 
-impl<
-        'a,
-        Pa: ParseSource<'a>,
-        T: FromLaTeXToken<'a, Pa::Pos, Pa::Str>,
-        Err: FnMut(String, SourceRange<Pa::Pos>, DiagnosticLevel),
-        State: ParserState<'a, Pa, T, Err>,
-    > Clone for AnyEnv<'a, Pa, T, Err, State>
+impl<'a, Pos: StringPosition, T: FromLaTeXToken<'a, Pos>, State: ParserState<'a, Pos, T>> Clone
+    for AnyEnv<'a, Pos, T, State>
 {
     fn clone(&self) -> Self {
         match self {
@@ -233,13 +184,12 @@ impl<
 
 pub fn read_verbatim_char<
     'a,
-    Pa: ParseSource<'a>,
-    T: FromLaTeXToken<'a, Pa::Pos, Pa::Str>,
-    Err: FnMut(String, SourceRange<Pa::Pos>, DiagnosticLevel),
-    State: ParserState<'a, Pa, T, Err>,
+    Pos: StringPosition,
+    T: FromLaTeXToken<'a, Pos>,
+    State: ParserState<'a, Pos, T>,
 >(
-    mac: &mut Macro<'a, Pa::Pos, Pa::Str>,
-    p: &mut LaTeXParser<'a, Pa, T, Err, State>,
+    mac: &mut Macro<'a, Pos>,
+    p: &mut LaTeXParser<'a, Pos, T, State>,
     end: char,
 ) {
     //let tstart = p.curr_pos();
@@ -253,7 +203,7 @@ pub fn read_verbatim_char<
     ) {
         mac.args.push(text);
     }*/
-    if let Some(h2) = p.tokenizer.reader.pop_head() {
+    if let Some(h2) = p.tokenizer.reader.next_char() {
         if h2 != end {
             p.tokenizer.problem(
                 mac.range.start,
@@ -272,13 +222,12 @@ pub fn read_verbatim_char<
 
 pub fn read_verbatim_str<
     'a,
-    Pa: ParseSource<'a>,
-    T: FromLaTeXToken<'a, Pa::Pos, Pa::Str>,
-    Err: FnMut(String, SourceRange<Pa::Pos>, DiagnosticLevel),
-    State: ParserState<'a, Pa, T, Err>,
+    Pos: StringPosition,
+    T: FromLaTeXToken<'a, Pos>,
+    State: ParserState<'a, Pos, T>,
 >(
-    _env: &mut Environment<'a, Pa::Pos, Pa::Str, T>,
-    p: &mut LaTeXParser<'a, Pa, T, Err, State>,
+    _env: &mut Environment<'a, Pos, T>,
+    p: &mut LaTeXParser<'a, Pos, T, State>,
     end_str: &str,
 ) {
     //let tstart = p.curr_pos();
@@ -318,14 +267,13 @@ macro_rules! tex {
     ($p:ident => $name:ident$($args:tt)*) => {
         #[allow(unused_mut,non_snake_case)]
         pub fn $name<'a,
-            Pa: ::flams_utils::parsing::ParseSource<'a>,
-            T: $crate::quickparse::latex::FromLaTeXToken<'a, Pa::Pos, Pa::Str>,
-            Err:FnMut(String,::flams_utils::sourcerefs::SourceRange<Pa::Pos>,DiagnosticLevel),
-            State: $crate::quickparse::latex::ParserState<'a,Pa,T,Err>
+            Pos: ::flams_utils::sourcerefs::StringPosition,
+            T: $crate::quickparse::latex::FromLaTeXToken<'a, Pos>,
+            State: $crate::quickparse::latex::ParserState<'a,Pos,T>
         >(
-            mut $name:$crate::quickparse::latex::Macro<'a,Pa::Pos,Pa::Str>,
-            $p:&mut $crate::quickparse::latex::LaTeXParser<'a, Pa, T, Err, State>
-        ) -> $crate::quickparse::latex::rules::MacroResult<'a, Pa::Pos, Pa::Str,T> {
+            mut $name:$crate::quickparse::latex::Macro<'a,Pos>,
+            $p:&mut $crate::quickparse::latex::LaTeXParser<'a, Pos, T, State>
+        ) -> $crate::quickparse::latex::rules::MacroResult<'a, Pos,T> {
             tex!{@args $p:$name$($args)*}
         }
     };
@@ -333,27 +281,25 @@ macro_rules! tex {
     ($p:ident => @begin{$name:ident}$( ($($args:tt)* ) )? {$($start:tt)*} $($end:tt)*) => {paste::paste!(
         #[allow(unused,unused_mut,non_snake_case,clippy::missing_const_for_fn)]
         pub fn [<$name _open>]<'a,
-            Pa: ::flams_utils::parsing::ParseSource<'a>,
-            T: $crate::quickparse::latex::FromLaTeXToken<'a, Pa::Pos, Pa::Str>,
-            Err:FnMut(String,::flams_utils::sourcerefs::SourceRange<Pa::Pos>,DiagnosticLevel),
-            State: $crate::quickparse::latex::ParserState<'a,Pa,T,Err>
+            Pos: ::flams_utils::sourcerefs::StringPosition,
+            T: $crate::quickparse::latex::FromLaTeXToken<'a, Pos>,
+            State: $crate::quickparse::latex::ParserState<'a,Pos,T>
         >(
-            $name:&mut $crate::quickparse::latex::Environment<'a, Pa::Pos, Pa::Str, T>,
-            $p:&mut $crate::quickparse::latex::LaTeXParser<'a, Pa, T, Err, State>
+            $name:&mut $crate::quickparse::latex::Environment<'a, Pos, T>,
+            $p:&mut $crate::quickparse::latex::LaTeXParser<'a, Pos, T, State>
         ) {
             $( tex!{@envargs $p:$name $($args)* } )?
             $($start)*
         }
         #[allow(unused,unused_mut,non_snake_case,clippy::missing_const_for_fn)]
         pub fn [<$name _close>]<'a,
-            Pa: ::flams_utils::parsing::ParseSource<'a>,
-            T: $crate::quickparse::latex::FromLaTeXToken<'a, Pa::Pos, Pa::Str>,
-            Err:FnMut(String,::flams_utils::sourcerefs::SourceRange<Pa::Pos>,DiagnosticLevel),
-            State: $crate::quickparse::latex::ParserState<'a,Pa,T,Err>
+            Pos: ::flams_utils::sourcerefs::StringPosition,
+            T: $crate::quickparse::latex::FromLaTeXToken<'a, Pos>,
+            State: $crate::quickparse::latex::ParserState<'a,Pos,T>
         >(
-            mut $name:$crate::quickparse::latex::Environment<'a,Pa::Pos, Pa::Str, T>,
-            $p:&mut $crate::quickparse::latex::LaTeXParser<'a, Pa, T, Err, State>
-        ) -> $crate::quickparse::latex::rules::EnvironmentResult<'a,Pa::Pos,Pa::Str,T> {
+            mut $name:$crate::quickparse::latex::Environment<'a,Pos, T>,
+            $p:&mut $crate::quickparse::latex::LaTeXParser<'a, Pos, T, State>
+        ) -> $crate::quickparse::latex::rules::EnvironmentResult<'a,Pos,T> {
             tex!{@end $name $($end)*}
         }
     );};
@@ -435,6 +381,15 @@ macro_rules! tex {
         $p.close_group();
         tex!{@envargs $p:$name $($args)*}
     };
+    (@envargs $p:ident:$name:ident{$arg:ident:T!}$($args:tt)*) => {
+        let mode = $p.tokenizer.mode;
+        $p.open_group();
+        $p.tokenizer.mode = $crate::quickparse::tokenizer::Mode::Text;
+        let $arg = $p.get_argument_with_str(&mut $name.begin);
+        $p.tokenizer.mode = mode;
+        $p.close_group();
+        tex!{@envargs $p:$name $($args)*}
+    };
     (@envargs $p:ident:$name:ident{_:T}$($args:tt)*) => {
         let mode = $p.tokenizer.mode;
         $p.open_group();
@@ -500,7 +455,7 @@ macro_rules! tex {
         tex!{@envargs $p:$name $($args)*}
     };
     (@envargs $p:ident:$name:ident[$opt:ident:type $tp:ty]$($args:tt)*) => {
-        let $opt = <Vec<$tp> as crate::quickparse::latex::KeyValValues<_,_,_,_>>::parse_opt($p);
+        let $opt = <Vec<$tp> as $crate::quickparse::latex::KeyValValues<_,_,_>>::parse_opt($p);
         tex!{@envargs $p:$name $($args)*}
     };
     (@envargs $p:ident:$name:ident V:C($c:expr) $($args:tt)*) => {
@@ -552,6 +507,15 @@ macro_rules! tex {
         $p.open_group();
         $p.tokenizer.mode = $crate::quickparse::tokenizer::Mode::Text;
         let $arg = $p.get_argument(&mut $name);
+        $p.tokenizer.mode = mode;
+        $p.close_group();
+        tex!{@args $p:$name $($args)*}
+    };
+    (@args $p:ident:$name:ident{$arg:ident:T!}$($args:tt)*) => {
+        let mode = $p.tokenizer.mode;
+        $p.open_group();
+        $p.tokenizer.mode = $crate::quickparse::tokenizer::Mode::Text;
+        let $arg = $p.get_argument_with_str(&mut $name);
         $p.tokenizer.mode = mode;
         $p.close_group();
         tex!{@args $p:$name $($args)*}
@@ -620,7 +584,7 @@ macro_rules! tex {
         tex!{@args $p:$name $($args)*}
     };
     (@args $p:ident:$name:ident[$opt:ident:type $tp:ty]$($args:tt)*) => {
-        let $opt = <Vec<$tp> as crate::quickparse::latex::KeyValValues<_,_,_,_>>::parse_opt($p);
+        let $opt = <Vec<$tp> as $crate::quickparse::latex::KeyValValues<_,_,_>>::parse_opt($p);
         tex!{@args $p:$name $($args)*}
     };
     (@args $p:ident:$name:ident V:C($c:expr) $($args:tt)*) => {
@@ -629,12 +593,12 @@ macro_rules! tex {
     };
     (@args $p:ident:$name:ident($c:literal?$t:ident)$($args:tt)*) => {
         let $t = $p.tokenizer.reader.starts_with($c) && {
-            $p.tokenizer.reader.pop_head();true
+            $p.tokenizer.reader.next_char();true
         };
         tex!{@args $p:$name $($args)*}
     };
     (@args $p:ident:$name:ident($t:ident)$($args:tt)*) => {
-        if let Some($t) = $p.tokenizer.reader.pop_head() {
+        if let Some($t) = $p.tokenizer.reader.next_char() {
             tex!{@args $p:$name $($args)*}
         } else {
             $p.tokenizer.problem($name.range.start,"Expected character",DiagnosticLevel::Error);
@@ -655,7 +619,7 @@ tex!(p => begin{n:name} => {
     match p.environment(begin,n.0,n.1) {
         EnvironmentResult::Success(e) => MacroResult::Success(e),
         EnvironmentResult::Other(v) => MacroResult::Other(v),
-        EnvironmentResult::Simple(e) => T::from_environment(e).map_or_else(
+        EnvironmentResult::Simple(e) => p.state.from_environment(e).map_or_else(
             || MacroResult::Other(Vec::new()),
             MacroResult::Success
         )
@@ -663,7 +627,7 @@ tex!(p => begin{n:name} => {
 });
 
 tex!(p => end{n:name} => {
-    p.tokenizer.problem(end.range.start,format!("environment {} not open",n.0.as_ref()),DiagnosticLevel::Error);
+    p.tokenizer.problem(end.range.start,format!("environment {} not open",n.0),DiagnosticLevel::Error);
 }!);
 
 tex!(p => lstinline[_](c)V:C(c)!);
@@ -719,6 +683,7 @@ tex!(p => xdef => {def(xdef,p)});
 
 tex!(p => @begin{document} {}{
     let _start = p.curr_pos();
+    p.in_document = true;
     let _rest = p.tokenizer.reader.read_until_str("this string should never occur FOOBARBAZ BLA BLA asdk<ösndkf.k<asfb.mdv <sdasdjn");
 }!);
 tex!(p => @begin{verbatim}(V) {}{}!);

@@ -81,10 +81,10 @@ impl<K, V> VecMap<K, V> {
         for<'a> &'a E: PartialEq<&'a K>,
     {
         let index = self.0.iter().position(|(k, _)| key == k)?;
-        Some(self.0.remove(index).1)
+        Some(self.0.swap_remove(index).1)
     }
     pub fn remove_index(&mut self, i: usize) -> (K, V) {
-        self.0.remove(i)
+        self.0.swap_remove(i)
     }
 
     #[inline]

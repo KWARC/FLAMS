@@ -14,17 +14,17 @@ mod rustex {
     pub use rustex_lib::engine::files::RusTeXFileSystem;
     pub use rustex_lib::engine::output::{OutputCont, RusTeXOutput};
     pub use rustex_lib::engine::stomach::RusTeXStomach;
-    pub use rustex_lib::engine::{fonts::Fontsystem, state::RusTeXState};
     pub use rustex_lib::engine::{Extension, RusTeXEngine, RusTeXEngineT, Types};
+    pub use rustex_lib::engine::{fonts::Fontsystem, state::RusTeXState};
     pub use tex_engine::commands::{Macro, MacroSignature, TeXCommand};
     pub use tex_engine::engine::filesystem::FileSystem;
     pub use tex_engine::engine::gullet::DefaultGullet;
     pub use tex_engine::engine::mouth::DefaultMouth;
     pub use tex_engine::engine::{DefaultEngine, EngineAux};
-    pub use tex_engine::pdflatex::{nodes::PDFExtension, PDFTeXEngine};
+    pub use tex_engine::pdflatex::{PDFTeXEngine, nodes::PDFExtension};
     pub use tex_engine::prelude::{CSName, InternedCSName, Token, TokenList};
-    pub use tex_engine::tex::tokens::control_sequences::CSInterner;
     pub use tex_engine::tex::tokens::StandardToken;
+    pub use tex_engine::tex::tokens::control_sequences::CSInterner;
     pub use tex_engine::{engine::utils::memory::MemoryManager, tex::tokens::CompactToken};
     pub use tracing::{debug, error, instrument, trace, warn};
     pub type RTSettings = rustex_lib::engine::Settings;
@@ -77,7 +77,7 @@ impl OutputCont for FileOutput {
     }
 }
 
-struct TracingOutput;
+pub struct TracingOutput;
 impl OutputCont for TracingOutput {
     fn message(&self, text: String) {
         debug!(target:"rustex","{}", text);
@@ -134,9 +134,9 @@ impl EngineBase {
         out: O,
     ) -> RusTeXEngine {
         //use tex_engine::engine::filesystem::FileSystem;
+        use tex_engine::engine::EngineExtension;
         use tex_engine::engine::gullet::Gullet;
         use tex_engine::engine::stomach::Stomach;
-        use tex_engine::engine::EngineExtension;
         use tex_engine::prelude::ErrorHandler;
         use tex_engine::prelude::Mouth;
         let mut aux = EngineAux {

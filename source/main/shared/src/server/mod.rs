@@ -1,6 +1,5 @@
 pub mod files;
 pub mod lsp;
-pub mod settings;
 
 use std::future::IntoFuture;
 
@@ -101,7 +100,7 @@ async fn run_i(port_channel: Option<tokio::sync::watch::Sender<Option<u16>>>) {
     let mut app = axum::Router::<ServerState>::new()
         .route("/ws/log", axum::routing::get(ws::LogSocket::ws_handler))
         .route("/ws/queue", axum::routing::get(ws::QueueSocket::ws_handler))
-        .route("/ws/mathjx", axum::routing::get(ws::TeXSocket::handler))
+        //.route("/ws/mathjx", axum::routing::get(ws::TeXSocket::handler))
         .route("/ws/lsp", axum::routing::get(crate::server::lsp::register));
 
     if has_gl {

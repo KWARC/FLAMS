@@ -184,13 +184,20 @@ impl std::hash::Hash for Solvable {
     }
 }
 
-#[derive(Default, Debug)]
+#[derive(Default, Debug, Clone, PartialEq, Eq)]
 pub struct Solutions(pub(crate) rustc_hash::FxHashSet<Solvable>);
 impl Merge for Solutions {
     fn merge(&mut self, other: Self) {
         for e in other.0 {
             self.0.remove(&e);
             self.0.insert(e);
+        }
+    }
+}
+impl std::hash::Hash for Solutions {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        for s in self.0.iter() {
+            s.hash(state);
         }
     }
 }
@@ -251,6 +258,28 @@ impl MutableRefList<'_, Solutions> {
     #[must_use]
     pub fn subst(&self, term: Term) -> Term {
         fn subst_i(slf: &MutableRefList<Solutions>, term: Term) -> Term {
+            /*
+            beta_unknowns(
+                term.modify(|t| {
+                    if let Term::Var { variable, .. } = t
+                        && let Some(var) = is_solvable_var(variable)
+                    {
+                        self.iter().flat_map(|s| s.0.iter()).find_map(|s| {
+                            if s.name == *var
+                                && let BoundedValue::Solved(t) = &s.solution
+                            {
+                                Some(std::ops::ControlFlow::Continue(t.clone()))
+                            } else {
+                                None
+                            }
+                        })
+                    } else {
+                        None
+                    }
+                })
+                .into_owned(),
+            )
+            */
             let freevars = term.free_variables();
             if freevars.is_empty() {
                 drop(freevars);

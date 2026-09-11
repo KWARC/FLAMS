@@ -1,78 +1,85 @@
 .flams-treeview {
     width: fit-content;
-    --flams-treeview-spacing : 1.25em;
-    --flams-treeview-radius  : 1.5em;
+    --flams-treeview-spacing: 1.25em;
+    --flams-treeview-radius: 1.5em;
     padding-inline-start: 0;
     .flams-treeview {
-        margin-left  : calc(var(--flams-treeview-radius) - var(--flams-treeview-spacing));
-        padding-left : 0;
+        margin-left: calc(
+            var(--flams-treeview-radius) - var(--flams-treeview-spacing)
+        );
+        padding-left: 0;
         .flams-treeview-li {
-            border-left : 2px solid var(--colorNeutralStrokeAccessible);
+            border-left: 2px solid var(--colorNeutralStrokeAccessible);
         }
         .flams-treeview-li:last-child {
-            border-color : transparent;
+            border-color: transparent;
         }
-        .flams-treeview-li::before{
-            content      : '';
-            display      : block;
-            position     : absolute;
-            top          : calc((var(--flams-treeview-spacing) / -2) + 0.2em);
-            left         : -2px;
-            width        : calc(var(--flams-treeview-spacing) - 0.5em);
-            height       : calc(var(--flams-treeview-spacing) - 0.2em);
-            border       : solid var(--colorNeutralStrokeAccessible);
-            border-width : 0 0 2px 2px;
+        .flams-treeview-li::before {
+            content: "";
+            display: block;
+            position: absolute;
+            top: calc((var(--flams-treeview-spacing) / -2) + 0.2em);
+            left: -2px;
+            width: calc(var(--flams-treeview-spacing) - 0.5em);
+            height: calc(var(--flams-treeview-spacing) - 0.2em);
+            border: solid var(--colorNeutralStrokeAccessible);
+            border-width: 0 0 2px 2px;
         }
     }
 }
 
 .flams-treeview-inner {
-    margin-left  : calc(var(--flams-treeview-radius) - var(--flams-treeview-spacing));
-    padding-left : 0;
+    margin-left: calc(
+        var(--flams-treeview-radius) - var(--flams-treeview-spacing)
+    );
+    padding-left: 0;
     padding-inline-start: 0;
     width: fit-content;
     .flams-treeview-li {
-        border-left : 2px solid var(--colorNeutralStrokeAccessible);
+        border-left: 2px solid var(--colorNeutralStrokeAccessible);
     }
     .flams-treeview-li:last-child {
-        border-color : transparent;
+        border-color: transparent;
     }
-    .flams-treeview-li::before{
-        content      : '';
-        display      : block;
-        position     : absolute;
-        top          : calc(var(--flams-treeview-spacing) / -2);
-        left         : -2px;
-        width        : calc(var(--flams-treeview-spacing) - 0.5em);
-        height       : var(--flams-treeview-spacing);
-        border       : solid var(--colorNeutralStrokeAccessible);
-        border-width : 0 0 2px 2px;
+    .flams-treeview-li::before {
+        content: "";
+        display: block;
+        position: absolute;
+        top: calc(var(--flams-treeview-spacing) / -2);
+        left: -2px;
+        width: calc(var(--flams-treeview-spacing) - 0.5em);
+        height: var(--flams-treeview-spacing);
+        border: solid var(--colorNeutralStrokeAccessible);
+        border-width: 0 0 2px 2px;
     }
 }
 .flams-treeview-li {
-    display      : block;
-    position     : relative;
-    padding-left : calc(2 * var(--flams-treeview-spacing) - var(--flams-treeview-radius));
+    display: block;
+    position: relative;
+    padding-left: calc(
+        2 * var(--flams-treeview-spacing) - var(--flams-treeview-radius)
+    );
     text-align: left;
+    margin: 0;
     padding-top: 0.1em;
     padding-bottom: 0.1em;
 }
-.flams-treeview-summary{
-    display : block;
-    cursor  : pointer;
+.flams-treeview-summary {
+    display: block;
+    cursor: pointer;
 }
 
 .flams-treeview-summary::marker,
-.flams-treeview-summary::-webkit-details-marker{
-    display : none;
+.flams-treeview-summary::-webkit-details-marker {
+    display: none;
 }
 
-.flams-treeview-summary:focus{
-    outline : none;
+.flams-treeview-summary:focus {
+    outline: none;
 }
 
-.flams-treeview-summary:focus-visible{
-    outline : var(--strokeWidthThin) dotted var(--colorNeutralForeground1);
+.flams-treeview-summary:focus-visible {
+    outline: var(--strokeWidthThin) dotted var(--colorNeutralForeground1);
 }
 
 .flams-treeview-left-margin {

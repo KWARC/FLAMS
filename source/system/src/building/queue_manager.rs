@@ -139,7 +139,10 @@ impl QueueManager {
             .iter()
             .filter_map(|(k, v)| {
                 if let QueueName::Sandbox { name, .. } = v.name() {
-                    if &**name == user_name {
+                    if name
+                        .strip_prefix(user_name)
+                        .is_some_and(|rest| rest.as_bytes().iter().all(|b| b.is_ascii_digit()))
+                    {
                         Some((
                             *k,
                             v.name().clone(),

@@ -1,0 +1,48 @@
+[package]
+name = "flams"
+version = "0.0.6"
+edition = "2024"
+description = "𝖥𝖫∀𝖬∫ - Flexiformal Annotation Management System"
+
+[[bin]]
+name = "flams"
+path="src/main.rs"
+
+[features]
+docs = [
+    "dep:flams-router-dashboard",
+    "dep:ftml-ontology"
+]
+tantivy = [
+    "flams-main/tantivy"
+]
+vectorsearch = [
+    "flams-main/vectorsearch"
+]
+
+[dependencies]
+flams-main = {workspace=true,features=["ssr"]}
+flams-system = { workspace = true, features = [
+    "zip",
+    "gitlab",
+    #"rocksdb"
+] }
+flams-stex = { workspace = true }
+clap = { workspace = true }
+toml = { workspace = true }
+flams-utils = {workspace = true}
+ftml-uris = {workspace=true}
+
+# checking
+flams-math-archives = {workspace=true}
+enable-ansi-support = {version="0.3"}
+ftml-solver-trace = {workspace = true,features=["colors"]}
+tracing-subscriber = {workspace = true}
+tracing = {workspace = true}
+flams-ftml.workspace = true
+ftml-solver.workspace = true
+tokio.workspace = true
+
+# documentation
+flams-router-dashboard = {workspace=true,optional=true}
+ftml-ontology = {workspace=true,optional=true}

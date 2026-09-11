@@ -166,6 +166,7 @@ pub mod server {
             login.with_opt_queue(queue, |_, queue| {
                 let stale_only = stale_only.unwrap_or(true);
 
+                // only used to have tgts.as_slice() later
                 #[allow(clippy::option_if_let_else)]
                 let tgts: Vec<_> = match &target {
                     FormatOrTarget::Targets(t) => {
@@ -178,7 +179,7 @@ pub mod server {
                         };
                         v
                     }
-                    FormatOrTarget::Format(_) => Vec::new(),
+                    FormatOrTarget::Format(f) => Vec::new(),
                 };
 
                 let fot = match target {

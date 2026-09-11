@@ -8,7 +8,7 @@ use std::{
 
 use crate::{
     ClientExt, NewArchiveParams, ProgressCallbackServer, StandaloneExportParams, UriParams,
-    annotations::to_diagnostic,
+    annotations::{into_diagnostic, to_diagnostic},
     documents::LSPDocument,
     state::{LSPState, UrlOrFile},
 };
@@ -24,9 +24,14 @@ use flams_math_archives::{
     formats::FormatOrTargets,
     utils::path_ext::RelPath,
 };
-use flams_stex::quickparse::stex::{AnnotIter, STeXAnnot};
+use flams_stex::quickparse::stex::{AnnotIter, STeXAnnot, STeXDiagnostic};
 use flams_system::{TokioEngine, backend::backend};
-use flams_utils::{prelude::TreeChildIter, unwrap};
+use flams_utils::{
+    parsing::{Needle, SourceParser, StrParser},
+    prelude::TreeChildIter,
+    sourcerefs::{ByteOffset, LSPLineCol, PositionConverter, StringPosition, StringRange},
+    unwrap,
+};
 use ftml_ontology::{
     narrative::{
         DataRef,
@@ -37,7 +42,7 @@ use ftml_ontology::{
     },
     utils::{Css, RefTree},
 };
-use ftml_uris::{DocumentUri, IsNarrativeUri, UriWithArchive};
+use ftml_uris::{DocumentUri, IsDomainUri, IsNarrativeUri, SymbolUri, UriWithArchive, UriWithPath};
 use futures::{FutureExt, TryFutureExt, future::BoxFuture};
 
 macro_rules! impl_request {
@@ -150,11 +155,13 @@ impl<T: FLAMSLSPServer> ServerWrapper<T> {
                 "helloworld.tex",
                 include_str!("stex_default.txt"),
             ) {
-                Ok(path) => {
+                Ok(mut path) => {
                     let _ = client.show_message(lsp::ShowMessageParams {
                         typ: lsp::MessageType::INFO,
                         message: format!("Created new archive {archive}"),
                     });
+                    path.push("source");
+                    path.push("helloworld.tex");
                     client.open_file(&path);
                 }
                 Err(e) => {
@@ -315,6 +322,49 @@ impl<T: FLAMSLSPServer> ServerWrapper<T> {
         })
     }
 
+    pub(crate) fn snify(
+        &mut self,
+        UriParams { uri }: UriParams,
+    ) -> <Self as LanguageServer>::NotifyResult {
+        let url: UrlOrFile = uri.into();
+        let Some(doc) = self.inner.state().get(&url) else {
+            let _ = self
+                .inner
+                .client_mut()
+                .show_message(async_lsp::lsp_types::ShowMessageParams {
+                    typ: lsp::MessageType::ERROR,
+                    message: format!("Could not find file {url}"),
+                });
+            return ControlFlow::Continue(());
+        };
+        doc.up_to_date
+            .store(false, std::sync::atomic::Ordering::SeqCst);
+        doc.load_annotations_and(self.inner.state().clone(), true, |data| {
+            let mut diagnostics = Vec::new();
+            let iter: AnnotIter = data.annotations.iter().into();
+            for e in <AnnotIter as TreeChildIter<STeXAnnot>>::dfs(iter) {
+                if let STeXAnnot::SnifySuggestion { range, symbols } = e {
+                    diagnostics.push(into_diagnostic(STeXDiagnostic {
+                        level: flams_stex::quickparse::stex::DiagnosticLevel::Info,
+                        range: *range,
+                        message: "snify suggestion".to_string(),
+                    }));
+                }
+            }
+            if !diagnostics.is_empty() {
+                let _ = self.inner.client_mut().publish_diagnostics(
+                    async_lsp::lsp_types::PublishDiagnosticsParams {
+                        uri: url.into(),
+                        diagnostics,
+                        version: None,
+                    },
+                );
+            }
+        });
+
+        ControlFlow::Continue(())
+    }
+
     fn build(
         doc: &LSPDocument,
         uri: &impl std::fmt::Display,
@@ -385,7 +435,7 @@ impl<T: FLAMSLSPServer> ServerWrapper<T> {
                 let iclient = client.clone();
                 let d_archive = d.archive().cloned();
                 let Some(vec) = d
-                    .with_annots_block(state.clone(), move |annots| {
+                    .with_annots_block(state.clone(), false, move |annots| {
                         let mut client = iclient;
                         <AnnotIter as TreeChildIter<STeXAnnot>>::dfs(AnnotIter::from(
                             annots.annotations.iter(),
@@ -489,7 +539,7 @@ impl<T: FLAMSLSPServer> ServerWrapper<T> {
         tracing::info!("LSP: reload");
         state.backend().reset::<TokioEngine>();
         let _ = tokio::task::spawn_blocking(|| {
-            for e in flams_system::iter::<flams_system::FlamsExtension>() {
+            for e in flams_system::iter::<flams_math_archives::FlamsExtension>() {
                 (e.on_reload)();
             }
         });
@@ -548,7 +598,7 @@ impl<T: FLAMSLSPServer> ServerWrapper<T> {
             if rescan {
                 state.backend().reset::<TokioEngine>();
                 let _ = tokio::task::spawn_blocking(|| {
-                    for e in flams_system::iter::<flams_system::FlamsExtension>() {
+                    for e in flams_system::iter::<flams_math_archives::FlamsExtension>() {
                         (e.on_reload)();
                     }
                 });
@@ -670,11 +720,11 @@ impl<T: FLAMSLSPServer> LanguageServer for ServerWrapper<T> {
                 d.delta(change.text, change.range);
             }
             let mut client = self.inner.client().clone();
-            let _ = tokio::spawn(d.with_annots(self.inner.state().clone(), move |a| {
+            let _ = tokio::spawn(d.with_annots(self.inner.state().clone(), false, move |a| {
                 let r = lsp::PublishDiagnosticsParams {
                     uri: document.uri,
                     diagnostics: a.diagnostics.iter().map(to_diagnostic).collect(),
-                    version: None,
+                    version: Some(document.version),
                 };
                 let _ = client.publish_diagnostics(r);
             }));
@@ -1178,7 +1228,35 @@ impl<T: FLAMSLSPServer> LanguageServer for ServerWrapper<T> {
     impl_request!(will_rename_files = WillRenameFiles);
     impl_request!(will_delete_files = WillDeleteFiles);
     impl_request!(symbol = WorkspaceSymbolRequest);
-    impl_request!(execute_command = ExecuteCommand);
+
+    //impl_request!(execute_command = ExecuteCommand);
+    fn execute_command(
+        &mut self,
+        params: lsp::ExecuteCommandParams,
+    ) -> Res<Option<serde_json::Value>> {
+        tracing::trace_span!("executing command {}", params.command).in_scope(move || {
+            tracing::trace!("{:?}", params.arguments);
+            match &*params.command {
+                "snify/annotate" => {
+                    let state = self.inner.state().clone();
+                    let client = self.inner.client().clone();
+                    tokio::task::spawn_blocking(move || {
+                        snify_annotate(state, client, params.arguments);
+                    });
+                }
+                c => {
+                    let _ = self
+                        .inner
+                        .client_mut()
+                        .show_message(lsp::ShowMessageParams {
+                            message: format!("Unknown command {c:?}"),
+                            typ: lsp::MessageType::ERROR,
+                        });
+                }
+            }
+            Box::pin(std::future::ready(Ok(None))) as _
+        })
+    }
 
     // typeHierarchy/
     impl_request!(supertypes = TypeHierarchySupertypes);
@@ -1188,7 +1266,22 @@ impl<T: FLAMSLSPServer> LanguageServer for ServerWrapper<T> {
     impl_request!(completion_item_resolve = ResolveCompletionItem);
 
     // codeAction/
-    impl_request!(code_action_resolve = CodeActionResolveRequest);
+    //impl_request!(code_action_resolve = CodeActionResolveRequest);
+    fn code_action_resolve(&mut self, params: lsp::CodeAction) -> Res<lsp::CodeAction> {
+        tracing::trace_span!("executing command").in_scope(move || {
+            tracing::trace!("{params:?}");
+            Box::pin(std::future::ready(Ok(lsp::CodeAction {
+                title: "None".to_string(),
+                kind: None,
+                diagnostics: None,
+                edit: None,
+                command: None,
+                is_preferred: None,
+                disabled: None,
+                data: None,
+            }))) as _
+        })
+    }
 
     // workspaceSymbol/
     impl_request!(workspace_symbol_resolve = WorkspaceSymbolResolve);
@@ -1198,4 +1291,184 @@ impl<T: FLAMSLSPServer> LanguageServer for ServerWrapper<T> {
 
     // documentLink/
     impl_request!(document_link_resolve = DocumentLinkResolve);
+}
+
+fn snify_annotate(
+    state: LSPState,
+    mut client: ClientSocket,
+    mut arguments: Vec<serde_json::Value>,
+) {
+    fn err_num(num: usize, mut client: ClientSocket) {
+        let _ = client.show_message(lsp::ShowMessageParams {
+            message: format!(
+                "invalid number of arguments for snify/annotate; expected: 4; got: {num}"
+            ),
+            typ: lsp::MessageType::ERROR,
+        });
+    }
+    let Some(range) = arguments.pop() else {
+        err_num(0, client);
+        return;
+    };
+    let Some(doc) = arguments.pop() else {
+        err_num(1, client);
+        return;
+    };
+    let Some(needs_usemodule) = arguments.pop() else {
+        err_num(2, client);
+        return;
+    };
+    let Some(uri) = arguments.pop() else {
+        err_num(3, client);
+        return;
+    };
+    if !arguments.is_empty() {
+        err_num(arguments.len() + 4, client);
+        return;
+    }
+
+    let Ok(range) = serde_json::from_value::<StringRange<LSPLineCol>>(range) else {
+        let _ = client.show_message(lsp::ShowMessageParams {
+            message: "Expected document range in argument 4".to_string(),
+            typ: lsp::MessageType::ERROR,
+        });
+        return;
+    };
+    let Ok(needs_usemodule) = serde_json::from_value::<bool>(needs_usemodule) else {
+        let _ = client.show_message(lsp::ShowMessageParams {
+            message: "Expected boolean in argument 3".to_string(),
+            typ: lsp::MessageType::ERROR,
+        });
+        return;
+    };
+    let Ok(url) = serde_json::from_value::<lsp::Url>(doc) else {
+        let _ = client.show_message(lsp::ShowMessageParams {
+            message: "Expected lsp uri in argument 2".to_string(),
+            typ: lsp::MessageType::ERROR,
+        });
+        return;
+    };
+    let uri = if let serde_json::Value::String(s) = uri {
+        if s.is_empty() {
+            None
+        } else {
+            let Ok(uri) = s.parse::<SymbolUri>() else {
+                let _ = client.show_message(lsp::ShowMessageParams {
+                    message: "Expected symbol uri in argument 1".to_string(),
+                    typ: lsp::MessageType::ERROR,
+                });
+                return;
+            };
+            Some(uri)
+        }
+    } else {
+        let _ = client.show_message(lsp::ShowMessageParams {
+            message: "Expected symbol uri in argument 1".to_string(),
+            typ: lsp::MessageType::ERROR,
+        });
+        return;
+    };
+
+    tracing::trace!(
+        "Executing snify/annotate on {url}@{range} with {uri:?}; Needs usemodule:{needs_usemodule}"
+    );
+
+    let urlfile = UrlOrFile::from(url.clone());
+    let Some(doc) = state.get(&urlfile) else {
+        let _ = client.show_message(lsp::ShowMessageParams {
+            message: format!("Document {urlfile} not found"),
+            typ: lsp::MessageType::ERROR,
+        });
+        return;
+    };
+    let edits = doc.with_text(|txt| {
+        use crate::IsLSPRange;
+        thread_local! {
+            static NEEDLE:Needle<'static> = Needle::new("% srskip ");
+        }
+        let mut ret = Vec::new();
+        let Some(uri) = uri else {
+            let Some(text) = LSPLineCol::get_range(range.start, range.end, txt) else {
+                return Vec::new();
+            };
+            let mut parser = StrParser::<LSPLineCol>::new(txt);
+            let _ = NEEDLE.with(|n| parser.read_until_needle(n));
+            if parser.rest().is_empty() {
+                return vec![lsp::TextEdit {
+                    range: StringRange::into_range(StringRange {
+                        start: parser.pos,
+                        end: parser.pos,
+                    }),
+                    new_text: format!("\n% srskip l:{text}"),
+                }];
+            }
+            let _ = parser.drop_prefix("% srskip ");
+            return vec![lsp::TextEdit {
+                range: StringRange::into_range(StringRange {
+                    start: parser.pos,
+                    end: parser.pos,
+                }),
+                new_text: format!("l:{text}, "),
+            }];
+        };
+        if needs_usemodule {
+            use std::fmt::Write;
+            let mut parser = StrParser::<LSPLineCol>::new(txt);
+            parser.read_until_str("\\begin{document}");
+            parser.drop_prefix("\\begin{document}");
+            let mut insertion = format!("\n  \\usemodule[{}]{{", uri.archive_id());
+            if let Some(path) = uri.path() {
+                let _ = write!(insertion, "{path}?{}}}", uri.module_name());
+            } else {
+                let _ = write!(insertion, "{}}}", uri.module_name());
+            }
+            ret.push(lsp::TextEdit {
+                range: StringRange::into_range(StringRange {
+                    start: parser.pos,
+                    end: parser.pos,
+                }),
+                new_text: insertion,
+            });
+        }
+        ret.push(lsp::TextEdit {
+            range: StringRange::into_range(StringRange {
+                start: range.start,
+                end: range.start,
+            }),
+            new_text: format!("\\sr{{{}}}{{", uri.name()),
+        });
+        ret.push(lsp::TextEdit {
+            range: StringRange::into_range(StringRange {
+                start: range.end,
+                end: range.end,
+            }),
+            new_text: "}".to_string(),
+        });
+        ret
+        /*
+        let StringRange { start, end } =
+            PositionConverter::<LSPLineCol, ByteOffset>::new(txt).next_range(range);
+        let annot_text = txt.get(start.0..end.0) else {
+            let _ = client.show_message(lsp::ShowMessageParams {
+                message: format!("Range {range} outside document"),
+                typ: lsp::MessageType::ERROR,
+            });
+            return Vec::new();
+        };
+         */
+    });
+    let mut eds = std::collections::HashMap::new();
+    eds.insert(url, edits);
+    doc.force_snify
+        .store(true, std::sync::atomic::Ordering::Relaxed);
+    std::mem::drop(tokio::task::spawn(client.apply_edit(
+        lsp::ApplyWorkspaceEditParams {
+            label: None,
+            edit: lsp::WorkspaceEdit {
+                document_changes: None,
+                change_annotations: None,
+                changes: Some(eds),
+            },
+        },
+    )));
 }

@@ -94,7 +94,7 @@ export class FLAMSServer {
       }
     };
     appendToForm(request);
-    console.log(`Calling ${backendUrl}/${endpoint} with body`, formData);
+    //console.log(`Calling ${backendUrl}/${endpoint} with body`, formData);
     const response = await fetch(`${backendUrl}/${endpoint}`, {
       method: "POST",
       headers: {

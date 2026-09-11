@@ -23,6 +23,9 @@ impl ftml_backend::FlamsBackend for FtmlBackend {
     fn stripped(&self) -> bool {
         true
     }
+    fn content_link_url(&self, uri: ftml_uris::UriRef<'_>) -> String {
+        format!("/?uri={}", uri.url_encoded())
+    }
     fn document_link_url(&self, uri: &ftml_uris::DocumentUri) -> String {
         format!("/?uri={}", uri.url_encoded())
     }

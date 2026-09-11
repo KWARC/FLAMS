@@ -17,6 +17,7 @@ impl<'t, Split: SplitStrategy> CheckRef<'t, '_, Split> {
             tm.debug_short(),
             tp.debug_short()
         );
+        //crate::pause();
         self.wrap_check(CheckingTask::HasType(tm, tp), |slf| {
             slf.check_type_i(tm, tp)
         })
@@ -28,6 +29,8 @@ impl<'t, Split: SplitStrategy> CheckRef<'t, '_, Split> {
             sub.debug_short(),
             sup.debug_short()
         );
+        //crate::pause();
+
         self.wrap_check(CheckingTask::Subtype(sub, sup), |slf| {
             slf.check_subtype_i(sub, sup)
         })
@@ -66,11 +69,6 @@ impl<'t, Split: SplitStrategy> CheckRef<'t, '_, Split> {
         //self.cancellable(|slf| {
         Split::strategies(
             self,
-            "Using type inference",
-            |slf| {
-                let subtp = slf.infer_type(tm)?;
-                slf.scoped(|slf| slf.check_subtype(&subtp, tp))
-            },
             "Using checking rules",
             |slf| {
                 if let either::Left(r) = slf.simplify_rules_two(
@@ -101,6 +99,11 @@ impl<'t, Split: SplitStrategy> CheckRef<'t, '_, Split> {
                     .collect::<smallvec::SmallVec<_, 2>>();
                 Split::split(slf, true, rules, |slf, rl| rl.apply(slf, tm, tp))
                 */
+            },
+            "Using type inference",
+            |slf| {
+                let subtp = slf.infer_type(tm)?;
+                slf.scoped(|slf| slf.check_subtype(&subtp, tp))
             },
         )
         //})

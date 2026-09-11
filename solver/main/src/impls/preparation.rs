@@ -1,6 +1,6 @@
 use crate::{
     CheckRef,
-    impls::solving::Solutions,
+    impls::{records::Record, solving::Solutions},
     rules::implicits::{ImplicitExtApp, ImplicitExtBound, ImplicitExtTerm},
     split::SplitStrategy,
 };
@@ -13,7 +13,7 @@ use ftml_ontology::{
     narrative::{SharedDocumentElement, elements::VariableDeclaration},
     terms::{
         ApplicationTerm, Argument, BindingTerm, BoundArgument, ComponentVar, IsTerm, MaybeSequence,
-        Term, Variable, helpers::IntoTerm, sequences::Sequence, termpaths::TermPath,
+        OpaqueTerm, Term, Variable, helpers::IntoTerm, sequences::Sequence, termpaths::TermPath,
     },
 };
 
@@ -125,6 +125,7 @@ impl<Split: SplitStrategy> CheckRef<'_, '_, Split> {
         })
     }
 
+    /*
     fn push_down_implicits(term: Term) -> Term {
         if let Term::Application(ref app) = term
             && app.head.is(&*ftml_uris::metatheory::APPLY_IMPLICIT)
@@ -162,6 +163,7 @@ impl<Split: SplitStrategy> CheckRef<'_, '_, Split> {
             term
         }
     }
+     */
 
     fn prepare_i(
         &mut self,
@@ -171,10 +173,28 @@ impl<Split: SplitStrategy> CheckRef<'_, '_, Split> {
         tracing::trace!("preparing {:?}", t.debug_short());
         //let mut t = Self::prepare_seqs(t);
         //let mut t = Self::push_down_implicits(t);
-        if t.unapply_implicits().is_some() {
+        if t.unapply_implicits(false).is_some() {
             return t;
         }
         match &t {
+            Term::Field(f) => {
+                if let Some(r) = self.scoped(|slf| {
+                    if let Ok(r) = Record::from_term(&f.record, f.record_type.as_ref(), slf)
+                    && let Some(sym) = r.get_type().get_symbol(&f.key)
+                    //&& sym.data.tp.has_checked()
+                    && let Some(Some(vars)) = sym
+                        .data
+                        .tp
+                        .with_checked(|t| Some(t.get_bound_implicits()?.1.len()))
+                    {
+                        Some(t.clone().apply_implicits(vars, |_| slf.new_solvable()))
+                    } else {
+                        None
+                    }
+                }) {
+                    return r;
+                }
+            }
             Term::Symbol { uri, presentation } => {
                 return if let Ok(sym) = self.get_symbol(uri)
                     && sym.data.tp.has_checked()
@@ -222,9 +242,9 @@ impl<Split: SplitStrategy> CheckRef<'_, '_, Split> {
 
     fn revert_i(&mut self, t: Term) -> Term {
         match &t {
-            Term::Application(b) if b.head.unapply_implicits().is_some() => {
+            Term::Application(b) if b.head.unapply_implicits(true).is_some() => {
                 // SAFETY: pattern match
-                let (t, args) = unsafe { b.head.unapply_implicits().unwrap_unchecked() };
+                let (t, args) = unsafe { b.head.unapply_implicits(true).unwrap_unchecked() };
                 {
                     return self.revert_i(
                         Term::Application(ApplicationTerm::new(
@@ -236,9 +256,9 @@ impl<Split: SplitStrategy> CheckRef<'_, '_, Split> {
                     );
                 }
             }
-            Term::Bound(b) if b.head.unapply_implicits().is_some() => {
+            Term::Bound(b) if b.head.unapply_implicits(true).is_some() => {
                 // SAFETY: pattern match
-                let (t, args) = unsafe { b.head.unapply_implicits().unwrap_unchecked() };
+                let (t, args) = unsafe { b.head.unapply_implicits(true).unwrap_unchecked() };
                 {
                     return self.revert_i(
                         Term::Bound(BindingTerm::new(
@@ -251,9 +271,9 @@ impl<Split: SplitStrategy> CheckRef<'_, '_, Split> {
                 }
             }
 
-            Term::Application(a) if a.unapply_implicits().is_some() => {
+            Term::Application(a) if a.unapply_implicits(true).is_some() => {
                 // SAFETY: pattern match
-                let (t, _) = unsafe { a.unapply_implicits().unwrap_unchecked() };
+                let (t, _) = unsafe { a.unapply_implicits(true).unwrap_unchecked() };
                 return t.clone();
             }
             Term::Symbol { .. } | Term::Var { .. } => return t,
@@ -288,54 +308,55 @@ impl<Split: SplitStrategy> CheckRef<'_, '_, Split> {
     ) -> Term {
         tracing::trace!("Recursing {:?}", term.debug_short());
         match term {
-            Term::Application(a) => {
-                if let Term::Symbol { uri, .. } = &a.head
-                    && let Ok(m) = self.get_declaration::<Morphism>(uri)
+            Term::Opaque(ot) => Term::Opaque(OpaqueTerm::new(
+                ot.node.clone(),
+                ot.terms
+                    .iter()
+                    .enumerate()
+                    .map(|(i, t)| then(self, t.clone(), get_path(&mut path, i)))
+                    .collect(),
+            )),
+            Term::Application(a) => Term::Application(ApplicationTerm::new(
+                then(self, a.head.clone(), get_path(&mut path, 0)),
                 {
-                    // TODO @Marcel
-                }
-                Term::Application(ApplicationTerm::new(
-                    then(self, a.head.clone(), get_path(&mut path, 0)),
-                    {
-                        let mut idx = 0;
-                        a.arguments
-                            .iter()
-                            .map(|arg| match arg {
-                                Argument::Simple(t) => Argument::Simple(then(
+                    let mut idx = 0;
+                    a.arguments
+                        .iter()
+                        .map(|arg| match arg {
+                            Argument::Simple(t) => Argument::Simple(then(
+                                self,
+                                t.clone(),
+                                get_path(&mut path, {
+                                    idx += 1;
+                                    idx
+                                }),
+                            )),
+                            Argument::Sequence(MaybeSequence::One(t)) => {
+                                Argument::Sequence(MaybeSequence::One(then(
                                     self,
                                     t.clone(),
                                     get_path(&mut path, {
                                         idx += 1;
                                         idx
                                     }),
-                                )),
-                                Argument::Sequence(MaybeSequence::One(t)) => {
-                                    Argument::Sequence(MaybeSequence::One(then(
-                                        self,
-                                        t.clone(),
-                                        get_path(&mut path, {
-                                            idx += 1;
-                                            idx
-                                        }),
-                                    )))
-                                }
-                                Argument::Sequence(MaybeSequence::Seq(ts)) => {
-                                    idx += 1;
-                                    let mut npath = get_path(&mut path, idx);
-                                    Argument::Sequence(MaybeSequence::Seq(
-                                        ts.iter()
-                                            .cloned()
-                                            .enumerate()
-                                            .map(|(i, t)| then(self, t, get_path(&mut npath, i)))
-                                            .collect(),
-                                    ))
-                                }
-                            })
-                            .collect()
-                    },
-                    a.presentation.clone(),
-                ))
-            }
+                                )))
+                            }
+                            Argument::Sequence(MaybeSequence::Seq(ts)) => {
+                                idx += 1;
+                                let mut npath = get_path(&mut path, idx);
+                                Argument::Sequence(MaybeSequence::Seq(
+                                    ts.iter()
+                                        .cloned()
+                                        .enumerate()
+                                        .map(|(i, t)| then(self, t, get_path(&mut npath, i)))
+                                        .collect(),
+                                ))
+                            }
+                        })
+                        .collect()
+                },
+                a.presentation.clone(),
+            )),
             Term::Bound(b) => Term::Bound(BindingTerm::new(
                 then(self, b.head.clone(), get_path(&mut path, 0)),
                 self.scoped(|slf| {

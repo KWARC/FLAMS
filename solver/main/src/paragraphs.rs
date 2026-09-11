@@ -3,6 +3,7 @@ use crate::{
     facts::GlobalOrLocal,
     hoas::HOASSymbols,
     impls::solving::{Solutions, TermExtSolvable},
+    rules::ProofBarrier,
     split::SplitStrategy,
 };
 use ftml_ontology::{
@@ -178,7 +179,11 @@ impl<Split: SplitStrategy> Checker<Split> {
         let block = for_symbol.as_ref().map(|sym| &sym.uri);
         for s in &p.steps {
             if let Some(res) = self.proof_step(s, &mut state, block) {
+                let success = res.success();
                 ret.push(res);
+                if !success {
+                    return Some(CheckResult::Proof(p.uri.clone(), ret));
+                }
             }
         }
         if matches!(p.steps.last(), Some(ParagraphStep::ProofConclusion { .. })) {
@@ -192,7 +197,7 @@ impl<Split: SplitStrategy> Checker<Split> {
             let orig_df = &sym.data.df;
             if let Some(tp) = tp {
                 if let Some((orig, _)) = orig_tp.checked_or_parsed() {
-                    let tp = self.bind_implicits(&tp).unwrap_or(tp);
+                    let tp = self.bind_implicits(&tp).unwrap_or(tp.clone());
                     let (b, _, l) = self.check_subtype(None, &tp, &orig);
                     ret.push(ProofStepResult::Conclusion {
                         var: None,
@@ -205,16 +210,30 @@ impl<Split: SplitStrategy> Checker<Split> {
                     });
                 } else {
                     orig_tp.set_checked(tp.clone());
-                    orig_tp.set_presentation(self.revert_prepare(tp));
+                    orig_tp.set_presentation(self.revert_prepare(tp.clone()));
                 }
                 if let Some(df) = df
                     && orig_df.is_none()
                 {
+                    let df = ProofBarrier::apply(df, tp);
                     let df = self.bind_implicits(&df).unwrap_or(df);
                     orig_df.set_checked(df.clone());
                     orig_df.set_presentation(self.revert_prepare(df));
                 }
             }
+        } else if for_symbol.is_some() {
+            return Some(CheckResult::Proof(
+                p.uri.clone(),
+                vec![ProofStepResult::Conclusion {
+                    var: None,
+                    result: ProofStepCheckResult::ProofOnly {
+                        inferred: None,
+                        log: CheckLog::Fail(vec![
+                            "does not establish the theorem.".to_string().into(),
+                        ]),
+                    },
+                }],
+            ));
         }
         Some(CheckResult::Proof(p.uri.clone(), ret))
     }
@@ -301,10 +320,21 @@ impl<Split: SplitStrategy> Checker<Split> {
                 */
             } => {
                 let curr = context.context.len();
-                let results = steps
-                    .iter()
-                    .filter_map(|s| self.proof_step(s, context,block))
-                    .collect();
+                let mut results = Vec::with_capacity(steps.len());
+                for s in steps {
+                    if let Some(r) = self.proof_step(s, context, block) {
+                        let success = r.success();
+                        results.push(r);
+                        if !success {
+                            return Some(ProofStepResult::Subproof {
+                                uri: uri.clone(),
+                                var: var_name.clone(),
+                                results,
+                            })
+                        }
+                    }
+                }
+
                 if matches!(steps.last(), Some(ParagraphStep::ProofConclusion { .. })) {
                     context.context.pop();
                 }
@@ -361,22 +391,33 @@ impl<Split: SplitStrategy> Checker<Split> {
         let var = var_name.and_then(|vn| self.get_variable(vn).ok());
         if let Some(tm) = yields {
             let (unks, tm) = self.prepare(None, tm.clone());
-            let (b, unks, l) = context.check_inhabitable(self, unks, &tm, block);
-            proof_log = Some(ProofStepCheckResult::GoalOnly {
-                result: TypeCheckResult {
-                    success: b.unwrap_or_default(),
-                    log: CheckLog::from_pre(l, &mut |t| self.revert_prepare(t)),
-                },
-            });
+            let (b, nunks, l) = context.check_inhabitable(self, unks.clone(), &tm, block);
             if Some(true) == b {
-                tp = Some(self.wrap_none(Some(unks), |slf| slf.subst(tm)).1);
-            } else {
-                let tm = hoas.wrap_judg(&tm);
-                let (b, unks, l) = context.check_inhabitable(self, unks, &tm, block);
                 proof_log = Some(ProofStepCheckResult::GoalOnly {
                     result: TypeCheckResult {
                         success: b.unwrap_or_default(),
                         log: CheckLog::from_pre(l, &mut |t| self.revert_prepare(t)),
+                    },
+                });
+                tp = Some(self.wrap_none(Some(nunks), |slf| slf.subst(tm)).1);
+            } else {
+                let tm = hoas.wrap_judg(&tm);
+                let (b, unks, l2) = context.check_inhabitable(self, unks, &tm, block);
+                proof_log = Some(ProofStepCheckResult::GoalOnly {
+                    result: TypeCheckResult {
+                        success: b.unwrap_or_default(),
+                        log: if Some(true) == b {
+                            CheckLog::from_pre(l2, &mut |t| self.revert_prepare(t))
+                        } else {
+                            CheckLog::Strategy {
+                                name: "Checking provability".to_string(),
+                                steps: vec![
+                                    CheckLog::from_pre(l, &mut |t| self.revert_prepare(t)),
+                                    CheckLog::from_pre(l2, &mut |t| self.revert_prepare(t)),
+                                ],
+                                success: false,
+                            }
+                        },
                     },
                 });
                 tp = Some(
@@ -413,7 +454,12 @@ impl<Split: SplitStrategy> Checker<Split> {
                     unks = unks2;
                     t
                 });
-                df = Some(self.wrap_none(Some(unks), |slf| slf.subst(tm)).1);
+                let d = self.wrap_none(Some(unks), |slf| slf.subst(tm)).1;
+                if let Some(tp) = tp.as_ref() {
+                    df = Some(ProofBarrier::apply(d, tp.clone()));
+                } else {
+                    df = Some(d);
+                }
             }
         }
         if df.is_none() {
@@ -429,7 +475,9 @@ impl<Split: SplitStrategy> Checker<Split> {
                         panic!("bug");
                     };
                     let (b, unks, l) = context.check_type(self, unks, &tm, tp, block);
-                    df = Some(self.wrap_none(Some(unks), |slf| slf.subst(tm)).1);
+                    let d = self.wrap_none(Some(unks), |slf| slf.subst(tm)).1;
+                    df = Some(ProofBarrier::apply(d, tp.clone()));
+
                     proof_log = Some(ProofStepCheckResult::Both {
                         inhabitable: result,
                         matches: Some(TypeCheckResult {
@@ -450,14 +498,25 @@ impl<Split: SplitStrategy> Checker<Split> {
                         unks = unks2;
                         t
                     });
-                    df = Some(self.wrap_none(Some(unks), |slf| slf.subst(tm)).1);
+
+                    let d = self.wrap_none(Some(unks), |slf| slf.subst(tm)).1;
+                    if let Some(tp) = tp.as_ref() {
+                        df = Some(ProofBarrier::apply(d, tp.clone()));
+                    } else {
+                        df = Some(d);
+                    }
                 }
             } else if needs_def && let Some(tp) = tp.as_ref() {
                 let Some(ProofStepCheckResult::GoalOnly { result }) = proof_log.take() else {
                     panic!("bug");
                 };
                 let (r, unks, l) = context.prove(self, Solutions::default(), tp, block);
-                df = r.map(|t| self.wrap_none(Some(unks), |slf| slf.subst(t)).1);
+                df = r.map(|t| {
+                    ProofBarrier::apply(
+                        self.wrap_none(Some(unks), |slf| slf.subst(t)).1,
+                        tp.clone(),
+                    )
+                });
                 proof_log = Some(ProofStepCheckResult::Both {
                     inhabitable: result,
                     matches: Some(TypeCheckResult {
@@ -501,6 +560,17 @@ impl<Split: SplitStrategy> Checker<Split> {
         is_assumption: bool,
         block: Option<&SymbolUri>,
     ) -> Option<ProofStepCheckResult> {
+        /*
+        if let Some(vn) = var_name
+            && vn.name().as_ref().ends_with("proof/5.")
+        {
+            println!("HERE: {vn}");
+            crate::DEBUG.store(true, std::sync::atomic::Ordering::Relaxed);
+            print!("{esc}[2J{esc}[1;1H", esc = 27 as char);
+            println!("Debug mode on.");
+            crate::pause();
+        } */
+
         let (r, tp, df) = self.step_data_i(
             context,
             self.hoas()?,

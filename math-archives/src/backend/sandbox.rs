@@ -354,6 +354,25 @@ impl LocalBackend for SandboxedBackend {
         from: crate::formats::BuildTargetId,
         result: Option<Box<dyn crate::artifacts::Artifact>>,
     ) -> std::result::Result<(), crate::utils::errors::ArtifactSaveError> {
+        #[cfg(feature = "cached")]
+        {
+            if let Some(r) = result.as_ref() {
+                if let Some(r) = r.as_any().downcast_ref::<crate::artifacts::ContentUpdate>() {
+                    if let Some(d) = &r.document {
+                        self.0.manager.documents.remove(&d.uri);
+                    }
+                    for m in &r.modules {
+                        self.0.manager.modules.remove(&m.uri);
+                    }
+                } else if let Some(r) = r.as_any().downcast_ref::<crate::artifacts::ContentResult>()
+                {
+                    self.0.manager.documents.remove(&r.document.uri);
+                    for m in &r.modules {
+                        self.0.manager.modules.remove(&m.uri);
+                    }
+                }
+            }
+        }
         self.0
             .manager
             .with_buildable_archive(in_doc.archive_id(), |a| {

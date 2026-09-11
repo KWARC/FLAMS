@@ -1,7 +1,7 @@
 [target.wasm32-unknown-unknown]
 rustflags = [
-    "-Ctarget-cpu=mvp",
-    "-Ctarget-feature=+multivalue,+mutable-globals,+reference-types,+sign-ext",
+    #"-Ctarget-cpu=mvp",
+    #"-Ctarget-feature=+multivalue,+mutable-globals,+reference-types,+sign-ext",
     "--cfg", "web_sys_unstable_apis",
     "--cfg", 'getrandom_backend="wasm_js"',
     # Required for `cargo leptos build --split`: `wasm_split_macros` emits an
@@ -19,7 +19,7 @@ rustflags = [
 ]
 
 [build]
-rustflags = ["--cfg", "tokio_unstable","--cfg","web_sys_unstable_apis"]
+rustflags = ["--cfg", "tokio_unstable","--cfg","web_sys_unstable_apis","-Z","threads=8"]
 
 #[unstable]
 #codegen-backend=true
@@ -29,7 +29,7 @@ rustflags = ["--cfg", "tokio_unstable","--cfg","web_sys_unstable_apis"]
 
 #[target.x86_64-unknown-linux-gnu]
 #linker="clang"
-#rustflags = ["-C","link-arg=-fuse-ld=/usr/bin/mold"]
+#rustflags = ["--cfg", "tokio_unstable","-C","link-arg=-fuse-ld=/usr/bin/mold"]
 
 # ---------------------------------------------------------
 

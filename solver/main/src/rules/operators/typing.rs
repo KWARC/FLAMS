@@ -1,6 +1,6 @@
 use crate::{
     CheckRef,
-    rules::{PreparationRule, SimplificationRule, SizedSolverRule, SubtypeRule},
+    rules::{InferenceRule, PreparationRule, SimplificationRule, SizedSolverRule, SubtypeRule},
     split::SplitStrategy,
 };
 use ftml_ontology::terms::{
@@ -206,6 +206,82 @@ impl<Split: SplitStrategy> PreparationRule<Split> for SimpleTypeOperatorRule {
     }
     fn revert(&self, _: &CheckRef<'_, '_, Split>, t: Term) -> ControlFlow<Term, Term> {
         ControlFlow::Continue(t)
+    }
+}
+
+impl<Split: SplitStrategy> SimplificationRule<Split> for SimpleTypeOperatorRule {
+    fn applicable(&self, term: &Term) -> bool {
+        <Self as InferenceRule<Split>>::applicable(&self, term)
+    }
+    fn apply<'t>(
+        &self,
+        mut checker: CheckRef<'t, '_, Split>,
+        term: &'t Term,
+    ) -> Result<Term, Option<ftml_ontology::terms::termpaths::TermPath>> {
+        let Term::Application(app) = term else {
+            return Err(None);
+        };
+        let Term::Symbol { uri, .. } = &app.head else {
+            return Err(None);
+        };
+        if *uri != self.0 {
+            return Err(None);
+        }
+        let (tm, tp) = match &*app.arguments {
+            [Argument::Simple(tm), Argument::Simple(tp)] => (tm, tp),
+            [
+                Argument::Sequence(MaybeSequence::Seq(tms)),
+                Argument::Simple(tp),
+            ] => match &**tms {
+                [tm] => (tm, tp),
+                _ => return Err(None),
+            },
+            _ => return Err(None),
+        };
+        if checker.check_type(tm, tp) != Some(true) {
+            return Err(None);
+        }
+        Ok(tm.clone())
+    }
+}
+
+impl<Split: SplitStrategy> InferenceRule<Split> for SimpleTypeOperatorRule {
+    fn applicable(&self, term: &Term) -> bool {
+        if let Term::Application(app) = term
+            && let Term::Symbol { uri, .. } = &app.head
+            && *uri == self.0
+        {
+            matches!(&*app.arguments, [Argument::Simple(_), Argument::Simple(_)])
+                || matches!(&*app.arguments,[Argument::Sequence(MaybeSequence::Seq(v)),Argument::Simple(_)] if v.len() == 1)
+        } else {
+            false
+        }
+    }
+    fn infer<'t>(&self, mut checker: CheckRef<'t, '_, Split>, term: &'t Term) -> Option<Term> {
+        let Term::Application(app) = term else {
+            return None;
+        };
+        let Term::Symbol { uri, .. } = &app.head else {
+            return None;
+        };
+        if *uri != self.0 {
+            return None;
+        }
+        let (tm, tp) = match &*app.arguments {
+            [Argument::Simple(tm), Argument::Simple(tp)] => (tm, tp),
+            [
+                Argument::Sequence(MaybeSequence::Seq(tms)),
+                Argument::Simple(tp),
+            ] => match &**tms {
+                [tm] => (tm, tp),
+                _ => return None,
+            },
+            _ => return None,
+        };
+        if checker.check_type(tm, tp) != Some(true) {
+            return None;
+        }
+        Some(tp.clone())
     }
 }
 

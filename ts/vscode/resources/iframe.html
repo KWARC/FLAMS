@@ -10,7 +10,7 @@
       var eventer = window[eventMethod];
       var messageEvent = eventMethod == "attachEvent" ? "onmessage" : "message";
       eventer(messageEvent,function(e) {
-          console.log(e.data);
+          //console.log(e.data);
           vscode.postMessage(e.data);
       },false);
     </script>

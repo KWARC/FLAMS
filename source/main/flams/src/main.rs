@@ -1,16 +1,68 @@
-use clap::Parser;
-use core::panic;
-use flams_system::settings::{BuildQueueSettings, ServerSettings, SettingsSpec};
-use flams_utils::settings::GitlabSettings;
+mod check;
+#[cfg(any(doc, feature = "docs"))]
+pub mod endpoints;
+
 use std::path::{Path, PathBuf};
 
-#[derive(Parser, Debug)]
-#[command(propagate_version = true, version, about, long_about = Some(
+#[allow(unused_imports)]
+use flams_stex::STEX;
+use flams_system::settings::{BuildQueueSettings, ServerSettings, SettingsSpec};
+use ftml_uris::ArchiveId;
+
+fn in_tokio(f: impl Future<Output = ()>) {
+    let mut rt = tokio::runtime::Builder::new_multi_thread();
+    rt.enable_all();
+    rt.build()
+        .expect("Failed to initialize Tokio runtime")
+        .block_on(async move {
+            tokio::select! {
+            () = f => {},
+            _ = tokio::signal::ctrl_c() => std::process::exit(0)
+            }
+        })
+}
+fn in_tokio_fn(f: impl FnOnce() + Send + 'static) {
+    let mut rt = tokio::runtime::Builder::new_multi_thread();
+    rt.enable_all();
+    rt.build()
+        .expect("Failed to initialize Tokio runtime")
+        .block_on(async move {
+            tokio::select! {
+            r = tokio::task::spawn_blocking(f) => {
+                r.expect("this is a bug");
+            },
+            _ = tokio::signal::ctrl_c() => std::process::exit(0)
+            }
+        })
+}
+
+fn main() {
+    let mut cli = Cli::get();
+    match cli.command.take() {
+        Some(Commands::Build {
+            archive,
+            path,
+            persist,
+            verbose,
+        }) => {
+            let mut settings: SettingsSpec = cli.into();
+            settings.buildqueue.num_threads = Some(1);
+            in_tokio_fn(move || {
+                flams_system::settings::Settings::initialize(settings);
+                check::check(archive, path, persist, !verbose)
+            });
+        }
+        None => flams_main::main(cli.into()),
+    }
+}
+
+#[derive(clap::Parser, Debug)]
+#[command(name="flams",propagate_version = true, version, about, long_about = Some(
 "𝖥𝖫∀𝖬∫ - Flexiformal Annotation Management System\n\
 --------------------------------------------------------------------\n\
 See the \u{1b}]8;;https://github.com/UniFormal/MMT\u{1b}\\documentation\u{1b}]8;;\u{1b}\\ for details"
 ))]
-struct Cli {
+pub struct Cli {
     /// a comma-separated list of `MathHub` paths (if not given, the default paths are used
     /// as determined by the MATHHUB system variable or ~/.mathhub/mathhub.path)
     #[arg(short, long)]
@@ -82,6 +134,58 @@ struct Cli {
     pub(crate) gitlab_app_secret: Option<String>,
     #[arg(long)]
     pub(crate) gitlab_redirect_url: Option<String>,
+    #[command(subcommand)]
+    command: Option<Commands>,
+}
+
+#[derive(clap::Subcommand, Debug)]
+enum Commands {
+    /// Checks a single file
+    Build {
+        /// The archive of the file
+        #[arg(short, long)]
+        archive: ArchiveId,
+        /// The file path relative to the archive's source directory
+        #[arg(short, long)]
+        path: PathBuf,
+        /// Whether to write the build to disk (otherwise, results are printed and discarded)
+        #[arg(long)]
+        persist: bool,
+        /// Print entire proof trees; otherwise, successful steps are not expanded
+        #[arg(long)]
+        verbose: bool,
+    },
+}
+
+impl From<Cli> for SettingsSpec {
+    fn from(cli: Cli) -> Self {
+        fn from_file(cfg_file: &Path) -> SettingsSpec {
+            let cfg = std::fs::read_to_string(cfg_file).unwrap_or_else(|e| {
+                panic!("Could not read config file {}: {e}", cfg_file.display())
+            });
+            let cfg: SettingsSpec = toml::from_str(&cfg).unwrap_or_else(|e| {
+                panic!("Could not parse config file {}: {e}", cfg_file.display())
+            });
+            cfg
+        }
+        let (cfg, mut settings) = cli.into();
+        settings += SettingsSpec::from_envs();
+        if let Some(cfg_file) = cfg {
+            if cfg_file.exists() {
+                settings += from_file(&cfg_file);
+            } else {
+                panic!("Could not find config file {}", cfg_file.display());
+            }
+        } else if let Ok(path) = std::env::current_exe()
+            && let Some(path) = path.parent()
+        {
+            let path = path.join("settings.toml");
+            if path.exists() {
+                settings += from_file(&path);
+            }
+        }
+        settings
+    }
 }
 impl From<Cli> for (Option<PathBuf>, SettingsSpec) {
     /// #### Panics
@@ -107,7 +211,7 @@ impl From<Cli> for (Option<PathBuf>, SettingsSpec) {
             buildqueue: BuildQueueSettings {
                 num_threads: cli.threads,
             },
-            gitlab: GitlabSettings {
+            gitlab: flams_utils::settings::GitlabSettings {
                 url: cli.gitlab_url.map(|s| s.parse().expect("Illegal url")),
                 token: cli.gitlab_token.map(Into::into),
                 app_id: cli.gitlab_app_id.map(Into::into),
@@ -125,36 +229,7 @@ impl Cli {
     #[must_use]
     #[inline]
     fn get() -> Self {
+        use clap::Parser;
         Self::parse()
     }
-}
-
-#[must_use]
-#[allow(clippy::missing_panics_doc)]
-pub fn get_settings() -> SettingsSpec {
-    fn from_file(cfg_file: &Path) -> SettingsSpec {
-        let cfg = std::fs::read_to_string(cfg_file)
-            .unwrap_or_else(|e| panic!("Could not read config file {}: {e}", cfg_file.display()));
-        let cfg: SettingsSpec = toml::from_str(&cfg)
-            .unwrap_or_else(|e| panic!("Could not parse config file {}: {e}", cfg_file.display()));
-        cfg
-    }
-    let cli = Cli::get();
-    let (cfg, mut settings) = cli.into();
-    settings += SettingsSpec::from_envs();
-    if let Some(cfg_file) = cfg {
-        if cfg_file.exists() {
-            settings += from_file(&cfg_file);
-        } else {
-            panic!("Could not find config file {}", cfg_file.display());
-        }
-    } else if let Ok(path) = std::env::current_exe()
-        && let Some(path) = path.parent()
-    {
-        let path = path.join("settings.toml");
-        if path.exists() {
-            settings += from_file(&path);
-        }
-    }
-    settings
 }
