@@ -7,6 +7,10 @@ edition = "2024"
 petgraph = "0.8.3"
 tracing.workspace = true
 tracing-subscriber.workspace = true
+tokio = { workspace = true, features = ["sync", "rt"] }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["macros", "rt-multi-thread", "time"] }
 
 [lints]
 workspace = true

@@ -127,6 +127,15 @@ fn run_command<
         process = process.env(k, v);
     }
     match process
+        // Without this, stdin is inherited from the parent. pdflatex/bibtex/
+        // biber routinely hit non-fatal warnings that print "Type <return>
+        // to continue." and block reading a line from stdin even under
+        // -halt-on-error - if the parent's stdin is a pipe/pty that never
+        // sends EOF (a background service, this build pipeline's own test
+        // harness, ...), that read blocks forever. Closing stdin makes such
+        // a prompt read EOF immediately instead, so pdflatex treats it the
+        // same as an empty answer and moves on to the real fatal error.
+        .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
         .spawn()

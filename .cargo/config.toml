@@ -3,7 +3,19 @@ rustflags = [
     "-Ctarget-cpu=mvp",
     "-Ctarget-feature=+multivalue,+mutable-globals,+reference-types,+sign-ext",
     "--cfg", "web_sys_unstable_apis",
-    "--cfg", 'getrandom_backend="wasm_js"'
+    "--cfg", 'getrandom_backend="wasm_js"',
+    # Required for `cargo leptos build --split`: `wasm_split_macros` emits an
+    # `unsafe extern "C"` import (`#[link(wasm_import_module = "...")]`) for
+    # every `#[lazy_route]` split point (see
+    # wasm_split_macros-0.2.0/src/lib.rs's `wasm_split` proc macro) that is
+    # *never* meant to resolve locally - `wasm-split-cli`'s post-link pass
+    # (driven by the `--emit-relocs` cargo-leptos already adds for split
+    # builds) rewrites it into a real per-chunk import afterwards. Without
+    # this flag, wasm-ld's default "error on undefined symbol" policy fails
+    # the initial link with `undefined symbol:
+    # __wasm_split_00_..._import_..._<View>`. cargo-leptos 0.3.7 does not
+    # inject this itself, so it has to live here.
+    "-C", "link-arg=--allow-undefined",
 ]
 
 [build]

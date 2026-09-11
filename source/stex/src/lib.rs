@@ -1,11 +1,11 @@
 //#![feature(lazy_type_alias)]
 #![cfg_attr(docsrs, feature(doc_cfg))]
 
-mod dependencies;
-mod latex;
+pub mod dependencies;
+pub mod latex;
 pub mod math;
 pub mod quickparse;
-mod rustex;
+pub mod rustex;
 
 use crate::dependencies::STeXDependency;
 use either::Either;

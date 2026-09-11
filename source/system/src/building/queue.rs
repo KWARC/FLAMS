@@ -21,11 +21,7 @@ use flams_utils::{
 use ftml_ontology::utils::{time::Timestamp, RefTree};
 use ftml_uris::{ArchiveId, UriPath, UriWithArchive};
 use parking_lot::RwLock;
-use petgraph::graph::DiGraph;
-use std::{
-    collections::{HashMap, VecDeque},
-    num::NonZeroU32,
-};
+use std::{collections::VecDeque, num::NonZeroU32};
 use tracing::{info, instrument, Instrument};
 
 #[derive(Debug)]
@@ -162,7 +158,21 @@ impl Queue {
         let map = self.0.map.read();
         let mut running = RunningQueue::new(map.total);
         tracing::info_span!("sorting...").in_scope(|| {
-            Self::sort(&map, &mut running);
+            Self::sort_graph(&map, &mut running);
+            let length_queued = running.queue.len();
+            let length_failed = running.failed.len();
+            let length_blocked = running.blocked.len();
+            let length_done = running.done.iter().len();
+            let length_ = running.running.len();
+            tracing::info!("the total tasks are as follows : {}", map.map.len());
+            tracing::info!(
+                "the total sort in queued : {}, failed : {}, blocked : {}, done : {},running : {}",
+                length_queued,
+                length_failed,
+                length_blocked,
+                length_done,
+                length_
+            );
             tracing::info!("Done");
         });
         self.0.sender.lazy_send(|| QueueMessage::Started {
@@ -191,20 +201,6 @@ impl Queue {
         }
         self.finish();
     }
-    #[inline]
-    fn run_sync_dupe(&self) {
-        //let mut graph = DiGraph::new();
-        let read = self.0.map.read();
-        //let graph_store = HashMap::new();
-        let reverse_map = read
-            .map
-            .iter()
-            .map(|(k, v)| (v.0.id, (k.0, k.1)))
-            .collect::<HashMap<_, _>>();
-        for i in read.map.values() {}
-        todo!()
-    }
-
     #[cfg(feature = "tokio")]
     async fn run_async(self, sem: std::sync::Arc<tokio::sync::Semaphore>) {
         loop {
@@ -302,6 +298,8 @@ impl Queue {
             id: task.0.id,
             target,
         });
+        tracing::info!(target:"buildqueue","building [{}]{{{}}} :: {target}",
+            task.0.uri.archive_id(), task.0.rel_path);
         let spec = task.as_build_spec(&self.0.backend);
         //println!("Running task {target}");
         let BuildResult { log, mut result } =
@@ -377,6 +375,8 @@ impl Queue {
                         }
                     }
                     state.failed.push(task.clone());
+                    tracing::info!(target:"buildqueue","FAILED [{}]{{{}}} :: {target}",
+                        task.0.uri.archive_id(), task.0.rel_path);
                     self.0.sender.lazy_send(|| QueueMessage::TaskFailed {
                         id: task.0.id,
                         target,
@@ -394,6 +394,8 @@ impl Queue {
                         }
                     }
                     state.blocked.push(task.clone());
+                    tracing::info!(target:"buildqueue","blocked (deps outstanding) [{}]{{{}}} :: {target}",
+                        task.0.uri.archive_id(), task.0.rel_path);
                     self.0.sender.lazy_send(|| QueueMessage::TaskBlocked {
                         id: task.0.id,
                         target,
@@ -417,8 +419,12 @@ impl Queue {
                 }
                 if requeue {
                     state.queue.push_front(task.clone());
+                    tracing::info!(target:"buildqueue","done [{}]{{{}}} :: {target}, next pipeline step queued",
+                        task.0.uri.archive_id(), task.0.rel_path);
                 } else {
                     state.done.push(task.clone());
+                    tracing::info!(target:"buildqueue","done [{}]{{{}}} :: {target}, task complete",
+                        task.0.uri.archive_id(), task.0.rel_path);
                 }
                 drop(lock);
 
@@ -669,6 +675,16 @@ pub struct RunningQueue {
     pub(super) failed: Vec<BuildTask>,
     pub(super) running: Vec<BuildTask>,
     timer: Timer,
+    /// Cached `kosaraju_scc` result from `sort_graph`/`get_next_i_graph`'s
+    /// cycle-breaking fallback, keyed by the stable `StepId` rather than
+    /// `NodeIndex` - `graph::build_graph` returns a fresh `DiGraph` on every
+    /// call, so `NodeIndex` values aren't stable across rebuilds the way
+    /// they are in `buildsystem::Scheduler`'s persistent `StableDiGraph`.
+    /// The `usize` is the total known-step count at computation time, used
+    /// to detect a graph that's grown (e.g. a fresh `enqueue_archive` on an
+    /// already-running queue) and force a recompute rather than silently
+    /// returning a stale decomposition.
+    pub(super) sccs: Option<(usize, Vec<Vec<super::graph::StepId>>)>,
 }
 impl RunningQueue {
     fn new(total: usize) -> Self {
@@ -679,6 +695,7 @@ impl RunningQueue {
             done: Vec::new(),
             running: Vec::new(),
             timer: Timer::new(total),
+            sccs: None,
         }
     }
 }

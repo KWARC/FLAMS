@@ -6,6 +6,12 @@ edition = "2021"
 [dev-dependencies]
 tracing-subscriber = { workspace = true }
 rstest = { workspace = true }
+tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
+# real_archive_build.rs drives the real Queue/Scheduler, which needs the
+# tokio-backed AsyncEngine (TokioEngine) - the plain [dependencies] entry
+# below intentionally leaves "tokio" off so non-test builds of this crate
+# don't pull it in.
+flams-system = { workspace = true, features = ["tokio"] }
 
 [dependencies]
 ftml-ontology = { workspace = true, features = ["serde"] }

@@ -51,6 +51,13 @@ cargo update
 workspace = false
 install_crate = "cargo-leptos"
 command = "cargo"
+# --split (leptos's per-route lazy-loaded WASM code-splitting) is dropped
+# here: with cargo-leptos 0.3.7 + leptos 0.8.17 + wasm_split_helpers 0.2.0,
+# it deterministically produces a broken split-point symbol pairing
+# (undefined `__wasm_split_00_..._import_..._View` symbols at link time,
+# reproducible even after a full clean rebuild - not a caching issue).
+# Single monolithic WASM bundle instead; revisit once the toolchain
+# versions are compatible again.
 args = ["leptos", "build", "--release","--split"]
 
 [tasks.doc]
